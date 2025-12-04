@@ -2,23 +2,23 @@
   <HashAlgorithms>md5,sha256</HashAlgorithms>
   <EventFiltering>
 
-    <RuleGroup name="" groupRelation="or">
+    <RuleGroup groupRelation="or">
       <ProcessCreate onmatch="include">
         
-        <Rule groupRelation="and" name="Execution from Common Abused Folders">
+        <Rule groupRelation="and">
             <Image condition="contains any">\Users\;\ProgramData\;\Windows\Temp\</Image>
         </Rule>
 
-        <Rule groupRelation="and" name="Misused Tool Usage">
-            <Image condition="contains any">cmd.exe;powershell.exe;pwsh.exe;rundll32.exe;regsvr32.exe;certutil.exe;curl.exe;whoami.exe;net.exe;net1.exe;reg.exe;schtasks.exe;fodhelper.exe;bitsadmin.exe</Image>
+        <Rule groupRelation="and">
+            <Image condition="contains any">cmd.exe;powershell.exe;pwsh.exe;rundll32.exe;regsvr32.exe;certutil.exe;curl.exe;whoami.exe;net.exe;net1.exe;reg.exe;schtasks.exe;fodhelper.exe;bitsadmin.exe;ChromeSetup.exe</Image>
         </Rule>
         
-        <Rule groupRelation="and" name="Task Scheduler Execution">
+        <Rule groupRelation="and">
             <ParentImage condition="end with">svchost.exe</ParentImage>
             <User condition="is">NT AUTHORITY\SYSTEM</User>
             <Image condition="exclude">C:\Windows\System32\*</Image> 
         </Rule>
-        <Rule groupRelation="and" name="Task Scheduler Rundll32">
+        <Rule groupRelation="and">
             <ParentImage condition="end with">svchost.exe</ParentImage>
             <Image condition="end with">rundll32.exe</Image>
         </Rule>
@@ -26,14 +26,14 @@
       </ProcessCreate>
     </RuleGroup>
 
-    <RuleGroup name="" groupRelation="or">
+    <RuleGroup groupRelation="or">
       <ProcessTerminate onmatch="include">
         
-        <Rule groupRelation="and" name="Misused Tool Termination">
-            <Image condition="contains any">cmd.exe;powershell.exe;pwsh.exe;rundll32.exe;regsvr32.exe;certutil.exe;curl.exe;whoami.exe;net.exe;net1.exe;reg.exe;schtasks.exe;fodhelper.exe;bitsadmin.exe</Image>
+        <Rule groupRelation="and">
+            <Image condition="contains any">cmd.exe;powershell.exe;pwsh.exe;rundll32.exe;regsvr32.exe;certutil.exe;curl.exe;whoami.exe;net.exe;net1.exe;reg.exe;schtasks.exe;fodhelper.exe;bitsadmin.exe;ChromeSetup.exe</Image>
         </Rule>
 
-        <Rule groupRelation="and" name="Termination from Common Abused Folder">
+        <Rule groupRelation="and">
             <Image condition="contains any">\Users\;\ProgramData\;\Windows\Temp\</Image>
         </Rule>
 
@@ -48,22 +48,22 @@
     </NetworkConnect>
 
 
-    <RuleGroup name="" groupRelation="or">
+    <RuleGroup groupRelation="or">
       <FileCreate onmatch="include">
-        <Rule groupRelation="and" name="File Created in Common Abused Folder">
+        <Rule groupRelation="and">
             <TargetFilename condition="contains any">\Users\;\ProgramData\;\Windows\Temp\</TargetFilename>
         </Rule>
       </FileCreate>
     </RuleGroup>
 
-    <RuleGroup name="" groupRelation="or">
+    <RuleGroup groupRelation="or">
       <RegistryEvent onmatch="include">
         <TargetObject condition="contains">\Software\Classes\</TargetObject>
         <TargetObject condition="contains">\CurrentVersion\Run</TargetObject>
       </RegistryEvent>
     </RuleGroup>
 
-    <RuleGroup name="" groupRelation="or">
+    <RuleGroup groupRelation="or">
       <FileCreateStreamHash onmatch="include">
         <TargetFilename condition="end with">:Zone.Identifier</TargetFilename>
       </FileCreateStreamHash>
