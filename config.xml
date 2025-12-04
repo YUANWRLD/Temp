@@ -1,0 +1,63 @@
+<Sysmon schemaversion="4.82">
+  <HashAlgorithms>md5,sha256</HashAlgorithms>
+  <EventFiltering>
+  
+    <RuleGroup name="" groupRelation="or">
+      <ProcessCreate onmatch="include">
+      
+        <Image condition="image">whoami.exe</Image>
+        
+        <Rule groupRelation="and" name="Net Group Recon">
+            <Image condition="end with">net.exe</Image>
+            <CommandLine condition="contains">localgroup</CommandLine>
+        </Rule>
+        <Rule groupRelation="and" name="Net1 Group Recon">
+            <Image condition="end with">net1.exe</Image>
+            <CommandLine condition="contains">localgroup</CommandLine>
+        </Rule>
+
+        <Rule groupRelation="and" name="Suspicious Curl Download">
+            <Image condition="image">curl.exe</Image>
+            <CommandLine condition="contains"> -o </CommandLine>
+            <CommandLine condition="contains">\ProgramData\</CommandLine>
+        </Rule>
+
+        <Rule groupRelation="and" name="Schtask Persistence SYSTEM">
+            <Image condition="image">schtasks.exe</Image>
+            <CommandLine condition="contains">/Create</CommandLine>
+            <CommandLine condition="contains">/RU "SYSTEM"</CommandLine>
+        </Rule>
+
+        <Rule groupRelation="and" name="Fodhelper Abuse Execution">
+            <ParentImage condition="image">fodhelper.exe</ParentImage>
+            <Image condition="end with">rundll32.exe</Image>
+        </Rule>
+         <Rule groupRelation="and" name="Fodhelper Abuse Execution">
+            <ParentImage condition="image">fodhelper.exe</ParentImage>
+            <Image condition="end with">cmd.exe</Image>
+        </Rule>
+         <Rule groupRelation="and" name="Fodhelper Abuse Execution">
+            <ParentImage condition="image">fodhelper.exe</ParentImage>
+            <Image condition="end with">powershell.exe</Image>
+        </Rule>
+
+      </ProcessCreate>
+    </RuleGroup>
+
+    <RuleGroup name="" groupRelation="or">
+      <FileCreate onmatch="include">
+        <Rule groupRelation="and" name="DLL Drop in ProgramData">
+            <TargetFilename condition="contains">\ProgramData\</TargetFilename>
+            <TargetFilename condition="end with">.dll</TargetFilename>
+        </Rule>
+      </FileCreate>
+    </RuleGroup>
+
+    <RuleGroup name="" groupRelation="or">
+      <RegistryEvent onmatch="include">
+        <TargetObject condition="contains">\Classes\ms-settings\Shell\Open\command</TargetObject>
+      </RegistryEvent>
+    </RuleGroup>
+
+  </EventFiltering>
+</Sysmon>
