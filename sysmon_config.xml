@@ -1,27 +1,73 @@
-<Sysmon schemaversion="4.82">
+<Sysmon schemaversion="4.90">
   <HashAlgorithms>md5,sha256</HashAlgorithms>
   <EventFiltering>
 
-    <ProcessCreate onmatch="exclude">
-    </ProcessCreate>
+    <RuleGroup name="" groupRelation="or">
+      <ProcessCreate onmatch="include">
+        
+        <Rule groupRelation="and" name="Execution from Common Abused Folders">
+            <Image condition="contains any">\Users\;\ProgramData\;\Windows\Temp\</Image>
+        </Rule>
 
-    <ProcessTerminate onmatch="exclude">
-    </ProcessTerminate>
+        <Rule groupRelation="and" name="Misused Tool Usage">
+            <Image condition="contains any">cmd.exe;powershell.exe;pwsh.exe;rundll32.exe;regsvr32.exe;certutil.exe;curl.exe;whoami.exe;net.exe;net1.exe;reg.exe;schtasks.exe;fodhelper.exe;bitsadmin.exe</Image>
+        </Rule>
+        
+        <Rule groupRelation="and" name="Task Scheduler Execution">
+            <ParentImage condition="end with">svchost.exe</ParentImage>
+            <User condition="is">NT AUTHORITY\SYSTEM</User>
+            <Image condition="exclude">C:\Windows\System32\*</Image> 
+        </Rule>
+        <Rule groupRelation="and" name="Task Scheduler Rundll32">
+            <ParentImage condition="end with">svchost.exe</ParentImage>
+            <Image condition="end with">rundll32.exe</Image>
+        </Rule>
+
+      </ProcessCreate>
+    </RuleGroup>
+
+    <RuleGroup name="" groupRelation="or">
+      <ProcessTerminate onmatch="include">
+        
+        <Rule groupRelation="and" name="Misused Tool Termination">
+            <Image condition="contains any">cmd.exe;powershell.exe;pwsh.exe;rundll32.exe;regsvr32.exe;certutil.exe;curl.exe;whoami.exe;net.exe;net1.exe;reg.exe;schtasks.exe;fodhelper.exe;bitsadmin.exe</Image>
+        </Rule>
+
+        <Rule groupRelation="and" name="Termination from Common Abused Folder">
+            <Image condition="contains any">\Users\;\ProgramData\;\Windows\Temp\</Image>
+        </Rule>
+
+      </ProcessTerminate>
+    </RuleGroup>
 
     <NetworkConnect onmatch="exclude">
+        <Image condition="end with">chrome.exe</Image>
+        <Image condition="end with">msedge.exe</Image>
+        <Image condition="end with">firefox.exe</Image>
+        <Image condition="is">C:\Windows\System32\svchost.exe</Image> 
     </NetworkConnect>
 
-    <FileCreate onmatch="exclude">
-    </FileCreate>
 
-    <RegistryEvent onmatch="exclude">
-    </RegistryEvent>
-    
-    <FileCreateStreamHash onmatch="exclude">
-    </FileCreateStreamHash>
+    <RuleGroup name="" groupRelation="or">
+      <FileCreate onmatch="include">
+        <Rule groupRelation="and" name="File Created in Common Abused Folder">
+            <TargetFilename condition="contains any">\Users\;\ProgramData\;\Windows\Temp\</TargetFilename>
+        </Rule>
+      </FileCreate>
+    </RuleGroup>
 
-    <ImageLoad onmatch="exclude">
-    </ImageLoad>
+    <RuleGroup name="" groupRelation="or">
+      <RegistryEvent onmatch="include">
+        <TargetObject condition="contains">\Software\Classes\</TargetObject>
+        <TargetObject condition="contains">\CurrentVersion\Run</TargetObject>
+      </RegistryEvent>
+    </RuleGroup>
+
+    <RuleGroup name="" groupRelation="or">
+      <FileCreateStreamHash onmatch="include">
+        <TargetFilename condition="end with">:Zone.Identifier</TargetFilename>
+      </FileCreateStreamHash>
+    </RuleGroup>
 
   </EventFiltering>
 </Sysmon>
