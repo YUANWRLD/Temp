@@ -1,0 +1,27 @@
+<Sysmon schemaversion="4.82">
+  <HashAlgorithms>md5,sha256</HashAlgorithms>
+  <EventFiltering>
+
+    <ProcessCreate onmatch="exclude">
+    </ProcessCreate>
+
+    <ProcessTerminate onmatch="exclude">
+    </ProcessTerminate>
+
+    <NetworkConnect onmatch="exclude">
+    </NetworkConnect>
+
+    <FileCreate onmatch="exclude">
+    </FileCreate>
+
+    <RegistryEvent onmatch="exclude">
+    </RegistryEvent>
+    
+    <FileCreateStreamHash onmatch="exclude">
+    </FileCreateStreamHash>
+
+    <ImageLoad onmatch="exclude">
+    </ImageLoad>
+
+  </EventFiltering>
+</Sysmon>
