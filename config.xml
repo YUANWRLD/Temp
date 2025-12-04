@@ -1,25 +1,41 @@
-<Sysmon schemaversion="4.82">
-  <HashAlgorithms>md5,sha256</HashAlgorithms>
-  <EventFiltering>
-  
-    <RuleGroup name="" groupRelation="or">
+<RuleGroup name="" groupRelation="or">
       <ProcessCreate onmatch="include">
-      
-        <Image condition="image">whoami.exe</Image>
         
-        <Rule groupRelation="and" name="Net Group Recon">
-            <Image condition="end with">net.exe</Image>
-            <CommandLine condition="contains">localgroup</CommandLine>
+        <Rule groupRelation="and" name="Suspicious Exec in Downloads">
+            <Image condition="contains any">\Downloads\;\AppData\Local\Temp\</Image>
+            <Image condition="end with">.exe</Image>
         </Rule>
-        <Rule groupRelation="and" name="Net1 Group Recon">
-            <Image condition="end with">net1.exe</Image>
+        <Rule groupRelation="and" name="Suspicious Shell Spawn">
+            <ParentImage condition="contains any">\Downloads\;\AppData\Local\Temp\</ParentImage>
+            <Image condition="end with any">cmd.exe;powershell.exe;pwsh.exe</Image>
+        </Rule>
+
+        <Image condition="image">whoami.exe</Image>
+        <Rule groupRelation="and" name="Admin Group Recon">
+            <Image condition="end with">net.exe</Image>
             <CommandLine condition="contains">localgroup</CommandLine>
         </Rule>
 
         <Rule groupRelation="and" name="Suspicious Curl Download">
             <Image condition="image">curl.exe</Image>
             <CommandLine condition="contains"> -o </CommandLine>
-            <CommandLine condition="contains">\ProgramData\</CommandLine>
+        </Rule>
+
+        <Rule groupRelation="and" name="UAC Bypass Prep (Reg Add)">
+            <Image condition="end with">reg.exe</Image>
+            <CommandLine condition="contains">add</CommandLine>
+            <CommandLine condition="contains">ms-settings</CommandLine>
+        </Rule>
+
+        <Rule groupRelation="and" name="Fodhelper Abuse">
+            <ParentImage condition="image">fodhelper.exe</ParentImage>
+            <Image condition="end with any">cmd.exe;powershell.exe;rundll32.exe</Image>
+        </Rule>
+
+        <Rule groupRelation="and" name="Registry Key Cleanup">
+            <Image condition="image">reg.exe</Image>
+            <CommandLine condition="contains">delete</CommandLine>
+            <CommandLine condition="contains">ms-settings</CommandLine>
         </Rule>
 
         <Rule groupRelation="and" name="Schtask Persistence SYSTEM">
@@ -28,36 +44,5 @@
             <CommandLine condition="contains">/RU "SYSTEM"</CommandLine>
         </Rule>
 
-        <Rule groupRelation="and" name="Fodhelper Abuse Execution">
-            <ParentImage condition="image">fodhelper.exe</ParentImage>
-            <Image condition="end with">rundll32.exe</Image>
-        </Rule>
-         <Rule groupRelation="and" name="Fodhelper Abuse Execution">
-            <ParentImage condition="image">fodhelper.exe</ParentImage>
-            <Image condition="end with">cmd.exe</Image>
-        </Rule>
-         <Rule groupRelation="and" name="Fodhelper Abuse Execution">
-            <ParentImage condition="image">fodhelper.exe</ParentImage>
-            <Image condition="end with">powershell.exe</Image>
-        </Rule>
-
       </ProcessCreate>
     </RuleGroup>
-
-    <RuleGroup name="" groupRelation="or">
-      <FileCreate onmatch="include">
-        <Rule groupRelation="and" name="DLL Drop in ProgramData">
-            <TargetFilename condition="contains">\ProgramData\</TargetFilename>
-            <TargetFilename condition="end with">.dll</TargetFilename>
-        </Rule>
-      </FileCreate>
-    </RuleGroup>
-
-    <RuleGroup name="" groupRelation="or">
-      <RegistryEvent onmatch="include">
-        <TargetObject condition="contains">\Classes\ms-settings\Shell\Open\command</TargetObject>
-      </RegistryEvent>
-    </RuleGroup>
-
-  </EventFiltering>
-</Sysmon>
