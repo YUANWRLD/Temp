@@ -16,7 +16,7 @@
         <Rule groupRelation="and">
             <ParentImage condition="end with">svchost.exe</ParentImage>
             <User condition="is">NT AUTHORITY\SYSTEM</User>
-            <Image condition="exclude">C:\Windows\System32\*</Image> 
+            <Image condition="excludes">C:\Windows\System32\*</Image> 
         </Rule>
         <Rule groupRelation="and">
             <ParentImage condition="end with">svchost.exe</ParentImage>
