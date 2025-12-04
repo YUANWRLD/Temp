@@ -1,4 +1,4 @@
-<Sysmon schemaversion="4.82">
+<Sysmon schemaversion="4.90
   <HashAlgorithms>md5,sha256</HashAlgorithms>
   <EventFiltering>
 
@@ -42,20 +42,26 @@
         </Rule>
 
         <Rule groupRelation="and" name="Fodhelper Abuse (UAC Bypass)">
-            <ParentImage condition="image">fodhelper.exe</ParentImage>
+            <ParentImage condition="end with">fodhelper.exe</ParentImage>
             <Image condition="contains any">cmd.exe;powershell.exe;rundll32.exe;regsvr32.exe</Image>
         </Rule>
 
         <Rule groupRelation="and" name="Registry Key Cleanup">
-            <Image condition="image">reg.exe</Image>
+            <Image condition="end with">reg.exe</Image>
             <CommandLine condition="contains">delete</CommandLine>
             <CommandLine condition="contains">ms-settings</CommandLine>
         </Rule>
 
-        <Rule groupRelation="and" name="Schtask Persistence SYSTEM">
-            <Image condition="image">schtasks.exe</Image>
+        <Rule groupRelation="and" name="Schtask Persistence Creation">
+            <Image condition="end with">schtasks.exe</Image>
             <CommandLine condition="contains">/Create</CommandLine>
             <CommandLine condition="contains">/RU "SYSTEM"</CommandLine>
+        </Rule>
+
+        <Rule groupRelation="and" name="Persistence Execution (Task Scheduler)">
+            <ParentImage condition="end with">svchost.exe</ParentImage>
+            <Image condition="end with">rundll32.exe</Image>
+            <User condition="is">NT AUTHORITY\SYSTEM</User>
         </Rule>
 
       </ProcessCreate>
