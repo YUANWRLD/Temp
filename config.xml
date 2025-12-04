@@ -1,4 +1,4 @@
-<Sysmon schemaversion="4.90">
+<Sysmon schemaversion="4.82">
   <HashAlgorithms>md5,sha256</HashAlgorithms>
   <EventFiltering>
 
@@ -8,11 +8,11 @@
         <Rule groupRelation="and" name="Suspicious Exec in Downloads/Temp">
             <Image condition="contains any">\Downloads\;\AppData\Local\Temp\</Image>
             <Image condition="end with">.exe</Image>
-            </Rule>
+        </Rule>
 
         <Rule groupRelation="and" name="Suspicious Shell Spawn">
             <ParentImage condition="contains any">\Downloads\;\AppData\Local\Temp\</ParentImage>
-            <Image condition="end with any">cmd.exe;powershell.exe;pwsh.exe</Image>
+            <Image condition="contains any">cmd.exe;powershell.exe;pwsh.exe</Image>
         </Rule>
 
         <Image condition="image">whoami.exe</Image>
@@ -43,7 +43,7 @@
 
         <Rule groupRelation="and" name="Fodhelper Abuse (UAC Bypass)">
             <ParentImage condition="image">fodhelper.exe</ParentImage>
-            <Image condition="end with any">cmd.exe;powershell.exe;rundll32.exe;regsvr32.exe</Image>
+            <Image condition="contains any">cmd.exe;powershell.exe;rundll32.exe;regsvr32.exe</Image>
         </Rule>
 
         <Rule groupRelation="and" name="Registry Key Cleanup">
@@ -64,14 +64,14 @@
     <RuleGroup name="" groupRelation="or">
       <NetworkConnect onmatch="include">
         <Rule groupRelation="and" name="Suspicious C2 Connection">
-            <Image condition="end with any">cmd.exe;powershell.exe;rundll32.exe;python.exe;curl.exe</Image>
+            <Image condition="contains any">cmd.exe;powershell.exe;rundll32.exe;python.exe;curl.exe</Image>
             <DestinationPort condition="is not">80</DestinationPort>
             <DestinationPort condition="is not">443</DestinationPort>
-            </Rule>
+        </Rule>
         
         <Rule groupRelation="and" name="Rundll32 Network Activity">
             <Image condition="end with">rundll32.exe</Image>
-            </Rule>
+        </Rule>
       </NetworkConnect>
     </RuleGroup>
 
@@ -80,12 +80,12 @@
         
         <Rule groupRelation="and" name="Edge Download File">
             <Image condition="end with">msedge.exe</Image>
-            <TargetFilename condition="end with any">.zip;.exe;.rar</TargetFilename>
+            <TargetFilename condition="contains any">.zip;.exe;.rar</TargetFilename>
         </Rule>
 
         <Rule groupRelation="and" name="Suspicious File Drop">
             <TargetFilename condition="contains any">\ProgramData\;\Windows\Temp\;\Users\Public\</TargetFilename>
-            <TargetFilename condition="end with any">.exe;.dll;.bat;.ps1</TargetFilename>
+            <TargetFilename condition="contains any">.exe;.dll;.bat;.ps1</TargetFilename>
         </Rule>
 
       </FileCreate>
@@ -102,7 +102,7 @@
         
         <Rule groupRelation="and" name="MOTW: Edge Download">
             <Image condition="end with">msedge.exe</Image>
-            <TargetFilename condition="end with any">.zip;.exe</TargetFilename>
+            <TargetFilename condition="contains any">.zip;.exe</TargetFilename>
         </Rule>
 
         <Rule groupRelation="and" name="MOTW: General Download">
