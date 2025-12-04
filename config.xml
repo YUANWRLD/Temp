@@ -1,24 +1,38 @@
-<RuleGroup name="" groupRelation="or">
+<Sysmon schemaversion="4.90">
+  <HashAlgorithms>md5,sha256</HashAlgorithms>
+  <EventFiltering>
+
+    <RuleGroup name="" groupRelation="or">
       <ProcessCreate onmatch="include">
         
-        <Rule groupRelation="and" name="Suspicious Exec in Downloads">
+        <Rule groupRelation="and" name="Suspicious Exec in Downloads/Temp">
             <Image condition="contains any">\Downloads\;\AppData\Local\Temp\</Image>
             <Image condition="end with">.exe</Image>
-        </Rule>
+            </Rule>
+
         <Rule groupRelation="and" name="Suspicious Shell Spawn">
             <ParentImage condition="contains any">\Downloads\;\AppData\Local\Temp\</ParentImage>
             <Image condition="end with any">cmd.exe;powershell.exe;pwsh.exe</Image>
         </Rule>
 
         <Image condition="image">whoami.exe</Image>
+        
         <Rule groupRelation="and" name="Admin Group Recon">
             <Image condition="end with">net.exe</Image>
+            <CommandLine condition="contains">localgroup</CommandLine>
+        </Rule>
+        <Rule groupRelation="and" name="Admin Group Recon">
+            <Image condition="end with">net1.exe</Image>
             <CommandLine condition="contains">localgroup</CommandLine>
         </Rule>
 
         <Rule groupRelation="and" name="Suspicious Curl Download">
             <Image condition="image">curl.exe</Image>
             <CommandLine condition="contains"> -o </CommandLine>
+        </Rule>
+        <Rule groupRelation="and" name="CertUtil Download">
+            <Image condition="image">certutil.exe</Image>
+            <CommandLine condition="contains">urlcache</CommandLine>
         </Rule>
 
         <Rule groupRelation="and" name="UAC Bypass Prep (Reg Add)">
@@ -27,9 +41,9 @@
             <CommandLine condition="contains">ms-settings</CommandLine>
         </Rule>
 
-        <Rule groupRelation="and" name="Fodhelper Abuse">
+        <Rule groupRelation="and" name="Fodhelper Abuse (UAC Bypass)">
             <ParentImage condition="image">fodhelper.exe</ParentImage>
-            <Image condition="end with any">cmd.exe;powershell.exe;rundll32.exe</Image>
+            <Image condition="end with any">cmd.exe;powershell.exe;rundll32.exe;regsvr32.exe</Image>
         </Rule>
 
         <Rule groupRelation="and" name="Registry Key Cleanup">
@@ -46,3 +60,58 @@
 
       </ProcessCreate>
     </RuleGroup>
+
+    <RuleGroup name="" groupRelation="or">
+      <NetworkConnect onmatch="include">
+        <Rule groupRelation="and" name="Suspicious C2 Connection">
+            <Image condition="end with any">cmd.exe;powershell.exe;rundll32.exe;python.exe;curl.exe</Image>
+            <DestinationPort condition="is not">80</DestinationPort>
+            <DestinationPort condition="is not">443</DestinationPort>
+            </Rule>
+        
+        <Rule groupRelation="and" name="Rundll32 Network Activity">
+            <Image condition="end with">rundll32.exe</Image>
+            </Rule>
+      </NetworkConnect>
+    </RuleGroup>
+
+    <RuleGroup name="" groupRelation="or">
+      <FileCreate onmatch="include">
+        
+        <Rule groupRelation="and" name="Edge Download File">
+            <Image condition="end with">msedge.exe</Image>
+            <TargetFilename condition="end with any">.zip;.exe;.rar</TargetFilename>
+        </Rule>
+
+        <Rule groupRelation="and" name="Suspicious File Drop">
+            <TargetFilename condition="contains any">\ProgramData\;\Windows\Temp\;\Users\Public\</TargetFilename>
+            <TargetFilename condition="end with any">.exe;.dll;.bat;.ps1</TargetFilename>
+        </Rule>
+
+      </FileCreate>
+    </RuleGroup>
+
+    <RuleGroup name="" groupRelation="or">
+      <RegistryEvent onmatch="include">
+        <TargetObject condition="contains">\Classes\ms-settings\Shell\Open\command</TargetObject>
+      </RegistryEvent>
+    </RuleGroup>
+
+    <RuleGroup name="" groupRelation="or">
+      <FileCreateStreamHash onmatch="include">
+        
+        <Rule groupRelation="and" name="MOTW: Edge Download">
+            <Image condition="end with">msedge.exe</Image>
+            <TargetFilename condition="end with any">.zip;.exe</TargetFilename>
+        </Rule>
+
+        <Rule groupRelation="and" name="MOTW: General Download">
+            <TargetFilename condition="contains">\Downloads\</TargetFilename>
+            <TargetFilename condition="end with">:Zone.Identifier</TargetFilename>
+        </Rule>
+
+      </FileCreateStreamHash>
+    </RuleGroup>
+
+  </EventFiltering>
+</Sysmon>
