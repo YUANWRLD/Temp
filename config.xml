@@ -1,4 +1,4 @@
-<Sysmon schemaversion="4.90
+<Sysmon schemaversion="4.90">
   <HashAlgorithms>md5,sha256</HashAlgorithms>
   <EventFiltering>
 
@@ -41,9 +41,12 @@
             <CommandLine condition="contains">ms-settings</CommandLine>
         </Rule>
 
+        <Rule groupRelation="and" name="Fodhelper Spawn">
+            <Image condition="end with">fodhelper.exe</Image>
+        </Rule>
+
         <Rule groupRelation="and" name="Fodhelper Abuse (UAC Bypass)">
             <ParentImage condition="end with">fodhelper.exe</ParentImage>
-            <Image condition="contains any">cmd.exe;powershell.exe;rundll32.exe;regsvr32.exe</Image>
         </Rule>
 
         <Rule groupRelation="and" name="Registry Key Cleanup">
@@ -69,14 +72,20 @@
 
     <RuleGroup name="" groupRelation="or">
       <NetworkConnect onmatch="include">
-        <Rule groupRelation="and" name="Suspicious C2 Connection">
-            <Image condition="contains any">cmd.exe;powershell.exe;rundll32.exe;python.exe;curl.exe</Image>
+        <Rule groupRelation="and" name="Suspicious ChromeSetup C2">
+            <Image condition="end with">ChromeSetup.exe</Image>
             <DestinationPort condition="is not">80</DestinationPort>
             <DestinationPort condition="is not">443</DestinationPort>
         </Rule>
-        
-        <Rule groupRelation="and" name="Rundll32 Network Activity">
-            <Image condition="end with">rundll32.exe</Image>
+
+        <Rule groupRelation="and" name="Suspicious Ingress Tool Activity">
+            <Image condition="contains any">curl.exe;certutil.exe;wget.exe</Image>
+        </Rule>
+
+        <Rule groupRelation="and" name="Suspicious C2 Connection">
+            <Image condition="contains any">cmd.exe;powershell.exe;pwsh.exe;rundll32.exe;python.exe</Image>
+            <DestinationPort condition="is not">80</DestinationPort>
+            <DestinationPort condition="is not">443</DestinationPort>
         </Rule>
       </NetworkConnect>
     </RuleGroup>
