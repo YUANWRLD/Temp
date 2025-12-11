@@ -21,10 +21,21 @@
     <ClCompile Include="sqlite3.c">
       <Filter>來源檔案</Filter>
     </ClCompile>
+    <ClCompile Include="Syscalls.c">
+      <Filter>來源檔案</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="sqlite3.h">
       <Filter>標頭檔</Filter>
     </ClInclude>
+    <ClInclude Include="Syscalls.h">
+      <Filter>標頭檔</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <MASM Include="Syscalls-asm.x64.asm">
+      <Filter>來源檔案</Filter>
+    </MASM>
   </ItemGroup>
 </Project>

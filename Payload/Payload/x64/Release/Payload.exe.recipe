@@ -2,7 +2,7 @@
 <Project>
   <ProjectOutputs>
     <ProjectOutput>
-      <FullPath>C:\Users\yy\source\repos\Payload\x64\Release\Payload.exe</FullPath>
+      <FullPath>C:\Users\yy\source\Payload\x64\Release\Payload.exe</FullPath>
     </ProjectOutput>
   </ProjectOutputs>
   <ContentFiles />

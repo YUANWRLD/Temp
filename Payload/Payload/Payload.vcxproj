@@ -54,6 +54,7 @@
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <ImportGroup Label="ExtensionSettings">
+    <Import Project="$(VCTargetsPath)\BuildCustomizations\masm.props" />
   </ImportGroup>
   <ImportGroup Label="Shared">
   </ImportGroup>
@@ -130,11 +131,17 @@
   <ItemGroup>
     <ClCompile Include="Payload.cpp" />
     <ClCompile Include="sqlite3.c" />
+    <ClCompile Include="Syscalls.c" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="sqlite3.h" />
+    <ClInclude Include="Syscalls.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <MASM Include="Syscalls-asm.x64.asm" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
+    <Import Project="$(VCTargetsPath)\BuildCustomizations\masm.targets" />
   </ImportGroup>
 </Project>

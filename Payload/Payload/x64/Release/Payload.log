@@ -1,1 +1,16 @@
-﻿
+﻿  Assembling Syscalls-asm.x64.asm...
+cl : 命令列  warning D9025: 覆寫 '/sdl'，以 '/GS-'
+  Payload.cpp
+C:\Users\yy\source\Payload\Payload\Payload.cpp(388,33): warning C4267: '=': 將 'size_t' 轉換為 'DWORD'，資料可能遺失
+C:\Users\yy\source\Payload\Payload\Payload.cpp(392,84): warning C4267: '引數': 將 'size_t' 轉換為 'DWORD'，資料可能遺失
+C:\Users\yy\source\Payload\Payload\Payload.cpp(401,19): warning C4267: '正在初始化': 將 'size_t' 轉換為 'DWORD'，資料可能遺失
+C:\Users\yy\source\Payload\Payload\Payload.cpp(579,128): warning C4267: '引數': 將 'size_t' 轉換為 'DWORD'，資料可能遺失
+C:\Users\yy\source\Payload\Payload\Payload.cpp(579,113): warning C4267: '引數': 將 'size_t' 轉換為 'DWORD'，資料可能遺失
+cl : 命令列  warning D9025: 覆寫 '/sdl'，以 '/GS-'
+  sqlite3.c
+  Syscalls.c
+  正在產生程式碼
+  Previous IPDB not found, fall back to full compilation.
+  All 3705 functions were compiled because no usable IPDB/IOBJ from previous compilation was found.
+  已完成程式碼產生
+  Payload.vcxproj -> C:\Users\yy\source\Payload\x64\Release\Payload.exe
