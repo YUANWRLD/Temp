@@ -1,1 +1,8 @@
-﻿
+﻿  Assembling Syscalls-asm.x64.asm...
+  Loader.cpp
+  Syscalls.c
+  正在產生程式碼
+  Previous IPDB not found, fall back to full compilation.
+  All 373 functions were compiled because no usable IPDB/IOBJ from previous compilation was found.
+  已完成程式碼產生
+  Loader.vcxproj -> C:\Users\yy\source\Loader\x64\Release\Loader.exe

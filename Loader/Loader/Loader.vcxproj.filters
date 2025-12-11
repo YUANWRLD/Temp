@@ -18,11 +18,22 @@
     <ClCompile Include="Loader.cpp">
       <Filter>來源檔案</Filter>
     </ClCompile>
+    <ClCompile Include="Syscalls.c">
+      <Filter>來源檔案</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="Syscalls.h">
+      <Filter>標頭檔</Filter>
+    </ClInclude>
     <ClInclude Include="resource.h">
       <Filter>標頭檔</Filter>
     </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <MASM Include="Syscalls-asm.x64.asm">
+      <Filter>來源檔案</Filter>
+    </MASM>
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="Loader.rc">
